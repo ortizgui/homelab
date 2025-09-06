@@ -1,0 +1,8 @@
+[Unit]
+Description=Disk & RAID health checker with Telegram alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/disk-health.sh
