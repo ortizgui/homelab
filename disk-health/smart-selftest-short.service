@@ -1,0 +1,6 @@
+[Unit]
+Description=Run weekly SMART short tests
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/smart-selftest-short.sh
