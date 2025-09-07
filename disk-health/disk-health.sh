@@ -29,6 +29,13 @@ HIGH_TEMP=55
 CRITICAL_USAGE_THRESHOLD=85
 WARNING_USAGE_THRESHOLD=70
 
+# --- Configurações de relatório semanal ---
+# Envio de relatório semanal mesmo sem alterações:
+# dia da semana (1=segunda-feira ... 7=domingo), hora e minuto
+WEEKLY_REPORT_DOW=${WEEKLY_REPORT_DOW:-1}
+WEEKLY_REPORT_HOUR=${WEEKLY_REPORT_HOUR:-9}
+WEEKLY_REPORT_MINUTE=${WEEKLY_REPORT_MINUTE:-0}
+
 # --- Variáveis Globais ---
 TEST_MODE=false
 FORCE_SEND=false
@@ -215,6 +222,8 @@ main() {
         echo "ERRO: Arquivo de configuração $CONFIG_FILE não encontrado." >&2
         exit 1
     fi
+
+
     touch "$HASH_FILE"
 
     # 3. Descobrir e verificar cada disco
@@ -304,20 +313,23 @@ main() {
         fi
     done < <(df -H --output=source,pcent,target | tail -n +2)
 
-    if [ -n "$critical_usage_summary" ]; then
-        hash_state+="CRITICAL_USAGE:$critical_usage_summary"
-    fi
 
     # 5. Decidir se o alerta deve ser enviado
     local new_hash=$(echo -n -e "$hash_state" | md5sum | awk '{print $1}')
     local old_hash=$(cat "$HASH_FILE")
     log_debug "Novo Hash: $new_hash | Hash Antigo: $old_hash"
 
+    # Verifica horário para possível envio semanal independente de alterações
+    now_dow=$(date +%u)
+    now_hour=$(date +%H)
+    now_minute=$(date +%M)
+    log_debug "Hora atual: dia da semana $now_dow, $now_hour:$now_minute"
+
     local should_send_alert=false
     if [ "$TEST_MODE" = true ] || [ "$FORCE_SEND" = true ]; then
         should_send_alert=true
-    elif [ "$new_hash" != "$old_hash" ]; then
-        # Envia alerta em qualquer mudança de estado (problema novo ou resolvido)
+    elif [ "$new_hash" != "$old_hash" ] || { [ "$now_dow" -eq "$WEEKLY_REPORT_DOW" ] && [ "$now_hour" -eq "$WEEKLY_REPORT_HOUR" ] && [ "$now_minute" -eq "$WEEKLY_REPORT_MINUTE" ]; }; then
+        # Envia alerta em qualquer mudança de estado ou no agendamento semanal
         should_send_alert=true
     fi
     
