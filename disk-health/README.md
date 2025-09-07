@@ -66,7 +66,7 @@ sudo apt install -y smartmontools jq mdadm curl
 .
 ├─ disk-health.sh                 # main checker
 ├─ smart-selftest-short.sh        # (optional) weekly SMART short test
-├─ disk-alert.conf.example        # sample config for /etc/disk-alert.conf
+├─ disk-alert.conf               # config file (to be copied to /etc/disk-alert.conf)
 ├─ systemd/disk-health.service
 ├─ systemd/disk-health.timer
 ├─ systemd/smart-selftest-short.service
@@ -105,6 +105,9 @@ SSD_CRIT_TEMP=70
 ## 5) Install scripts & systemd units
 
 ```bash
+# config file
+sudo install -m 0600 disk-alert.conf /etc/disk-alert.conf
+
 # scripts
 sudo install -m 0755 disk-health.sh /usr/local/sbin/disk-health.sh
 sudo install -m 0755 smart-selftest-short.sh /usr/local/sbin/smart-selftest-short.sh
@@ -132,24 +135,45 @@ sudo systemctl enable --now smart-selftest-short.timer
 ## 6) Run a test now
 
 ```bash
-# Sends a message even if there is no state change
+# Envia uma mensagem de teste para validar a configuração
 sudo /usr/local/sbin/disk-health.sh --test
 
-# Check logs/cache
+# Envia uma mensagem mesmo se o último hash for igual (força o envio)
+sudo /usr/local/sbin/disk-health.sh --test --f
+
+# Verificar logs do sistema
 journalctl -t disk-health -n 50 --no-pager
-sudo jq . /var/lib/disk-health/last.json
 ```
 
-You should receive a Telegram message like:
+### Parâmetros disponíveis:
 
-```bash
-🟢 Disk Health — orangepi5
-Status: OK
-/dev/sda: OK
-/dev/nvme0n1: OK
+- `--test`: Envia uma mensagem de teste para validar se a configuração do Telegram está funcionando
+- `--test --f`: Força o envio da mensagem mesmo que o último estado seja igual (ignora o controle de hash)
+- Sem parâmetros: Execução normal (apenas envia alerta em caso de mudança de estado)
 
-RAID: OK
-<mdstat and mdadm details…>
+### Exemplo de mensagem de teste:
+
+```
+🧪 Teste do Disk Health - hostname
+
+✅ Sistema de monitoramento funcionando corretamente
+
+📊 Status atual:
+✅ Nenhum problema detectado
+
+🕐 Teste executado em: 2024-01-15 14:30:25
+```
+
+### Exemplo de mensagem de alerta:
+
+```
+Disk Alert for hostname
+
+CRITICAL Usage (>=85%): ‼️
+/home (/dev/sda1) at 87%
+
+WARNING Usage (>=70%): ⚠️
+/var (/dev/sda2) at 75%
 ```
 
 If RAID is degraded or any SMART critical attribute trips, you’ll see 🟡 WARN or 🔴 CRITICAL with reasons.
