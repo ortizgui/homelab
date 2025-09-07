@@ -1,535 +1,344 @@
 #!/bin/bash
+#
+# disk-health.sh - Script de Monitoramento de Discos
+#
+# Autor: Guilherme Ortiz
+# Data: 2025-09-07
+# Versão: 2.0
+#
+# Descrição:
+# Este script monitora a saúde (SMART), temperatura e uso de discos SATA, NVMe e USB.
+# Ele envia alertas para o Telegram se problemas forem detectados ou se o estado
+# de um disco for alterado (ex: de "OK" para "FALHANDO" ou vice-versa).
+#
+# Boas Práticas Aplicadas:
+# - Modularidade: O script é dividido em funções com responsabilidades únicas (SRP).
+# - DRY (Não se Repita): A lógica duplicada foi eliminada e centralizada em funções.
+# - Robustez: A análise de comandos (df, smartctl) foi melhorada para ser mais confiável.
+# - Legibilidade: O código está estruturado, comentado e usa nomes de variáveis claros.
+# - Segurança: `set -eo pipefail` é usado para um tratamento de erros mais estrito.
+#
 
-# Parâmetros de linha de comando
+set -eo pipefail
+
+# --- Configurações e Constantes ---
+CONFIG_FILE="/etc/disk-alert.conf"
+HASH_FILE="/tmp/disk-health-hash"
+CRITICAL_TEMP=70
+HIGH_TEMP=55
+CRITICAL_USAGE_THRESHOLD=85
+WARNING_USAGE_THRESHOLD=70
+
+# --- Variáveis Globais ---
 TEST_MODE=false
 FORCE_SEND=false
-
-# Parse command line arguments
-for arg in "$@"; do
-    case $arg in
-        --test)
-            TEST_MODE=true
-            ;;
-        --f)
-            FORCE_SEND=true
-            ;;
-    esac
-done
-
-# Carrega as configurações de alerta
-CONFIG_FILE="/etc/disk-alert.conf"
-if [ -f "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE"
-else
-    echo "Arquivo de configuração $CONFIG_FILE não encontrado."
-    exit 1
-fi
-
-# Arquivo para armazenar o hash do último estado
-HASH_FILE="/tmp/disk-health-hash"
-touch "$HASH_FILE"
-
 HOSTNAME=$(hostname)
-HAS_ISSUES=false
 
-# Arrays para armazenar informações dos discos
-declare -A DISK_INFO
-declare -A DISK_STATUS
-declare -A DISK_TEMP
-declare -A DISK_USAGE
+# --- Definição de Funções ---
 
-# --- Descoberta de Discos ---
-DISKS_TO_CHECK=""
-if [ -n "$DISKS" ]; then
-    DISKS_TO_CHECK="$DISKS"
-else
-    # Auto-descoberta de discos (SATA/NVMe/USB)
-    for disk in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
-        if [ -b "$disk" ]; then
-            DISKS_TO_CHECK="$DISKS_TO_CHECK $disk"
-        fi
-    done
-fi
-
-# --- Verificação detalhada de cada disco ---
-SMART_ISSUES=""
-for disk in $DISKS_TO_CHECK; do
-    if [ ! -b "$disk" ]; then
-        continue
+#
+# Imprime uma mensagem de debug se o modo de teste estiver ativo.
+#
+log_debug() {
+    if [ "$TEST_MODE" = true ]; then
+        echo "[DEBUG] $1" >&2
     fi
-    
-    disk_name=$(basename "$disk")
-    
-    # Determinar opções do dispositivo (para docks USB que precisam de SAT)
-    device_opts=""
-    if [ -n "$MAP_DEVICE_OPTS" ]; then
-        for mapping in $MAP_DEVICE_OPTS; do
-            dev=$(echo "$mapping" | cut -d'=' -f1)
-            opt=$(echo "$mapping" | cut -d'=' -f2)
-            if [ "$disk_name" = "$dev" ]; then
-                device_opts="$opt"
-                break
+}
+
+#
+# Envia uma mensagem de alerta para o Telegram.
+# Argumento 1: A mensagem a ser enviada.
+#
+send_telegram_alert() {
+    local message=$1
+    log_debug "Enviando mensagem para o Telegram."
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="$message" \
+        -d parse_mode="Markdown" > /dev/null
+}
+
+#
+# Descobre os discos a serem monitorados, com base na configuração ou auto-descoberta.
+#
+discover_disks() {
+    local disks_found=""
+    if [ -n "$DISKS" ]; then
+        log_debug "Usando discos definidos na configuração: $DISKS"
+        disks_found="$DISKS"
+    else
+        log_debug "Fazendo auto-descoberta de discos."
+        for disk in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
+            if [ -b "$disk" ]; then
+                disks_found="$disks_found $disk"
             fi
         done
     fi
-    
-    # Verificar status SMART
-    health_status=$(smartctl -H $device_opts "$disk" 2>/dev/null | grep "SMART overall-health self-assessment test result" | awk '{print $NF}')
-    
-    # Obter temperatura
-    temperature=""
-    # Usar smartctl -a para obter todas as informações, incluindo temperatura de NVMe
-    temp_output=$(smartctl -a $device_opts "$disk" 2>/dev/null)
+    echo "$disks_found"
+}
 
-    if [ -n "$temp_output" ]; then
-        # Formato NVMe: "Temperature: 42 Celsius"
-        temp_nvme=$(echo "$temp_output" | grep -E '^Temperature:' | awk '{print $2}')
+#
+# Coleta o status de saúde (SMART) e a temperatura de um disco.
+# Argumento 1: O caminho do disco (ex: /dev/sda).
+# Argumento 2: Opções extras para smartctl (ex: -d sat).
+# Retorna: Uma string com "STATUS TEMPERATURA".
+#
+get_smart_info() {
+    local disk_path=$1
+    local device_opts=$2
+    local health_status=""
+    local temperature=""
+
+    local smart_output
+    smart_output=$(smartctl -a ${device_opts} "${disk_path}" 2>/dev/null)
+
+    if [ -z "$smart_output" ]; then
+        log_debug "Não foi possível obter dados do smartctl para $disk_path."
+        echo "UNKNOWN N/A"
+        return
+    fi
+
+    # Obter status de saúde
+    health_status=$(echo "$smart_output" | grep "SMART overall-health self-assessment test result" | awk '{print $NF}')
+    [ -z "$health_status" ] && health_status="PASSED" # Assumir PASSED se não encontrar
+
+    # Obter temperatura (lógica aprimorada para NVMe e SATA)
+    local temp_nvme=$(echo "$smart_output" | grep -E '^Temperature:' | awk '{print $2}')
+    local temp_sata=$(echo "$smart_output" | grep -E 'Temperature_Celsius' | awk '{print $10}')
+
+    if [[ "$temp_nvme" =~ ^[0-9]+$ ]]; then
+        temperature="$temp_nvme"
+    elif [[ "$temp_sata" =~ ^[0-9]+$ ]]; then
+        temperature="$temp_sata"
+    else
+        temperature="N/A"
+    fi
+
+    echo "$health_status $temperature"
+}
+
+#
+# Encontra o maior percentual de uso de um disco, verificando suas partições e/ou RAID.
+# Argumento 1: O nome do disco (ex: sda).
+# Retorna: O percentual de uso (ex: 85%) or "N/A".
+#
+get_disk_usage() {
+    local disk_name=$1
+    local max_usage=0
+
+    # Verifica partições montadas do disco (ex: sda1, sda2)
+    while read -r source pcent; do
+        if [[ "$source" == "/dev/${disk_name}"* ]]; then
+            local usage_num=${pcent//%/}
+            if [[ "$usage_num" -gt "$max_usage" ]]; then
+                max_usage=$usage_num
+            fi
+        fi
+    done < <(df --output=source,pcent | tail -n +2)
+
+    # Se não encontrou uso, verifica se faz parte de um RAID
+    if [ "$max_usage" -eq 0 ] && [ -f /proc/mdstat ]; then
+        local raid_device=$(grep "$disk_name" /proc/mdstat 2>/dev/null | head -1)
+        if [ -n "$raid_device" ]; then
+            local md_name=$(echo "$raid_device" | awk '{print $1}')
+            log_debug "$disk_name faz parte do RAID: $md_name"
+            
+            local raid_usage=$(df --output=pcent "/dev/${md_name}" 2>/dev/null | tail -n 1 || echo "0%")
+            raid_usage=${raid_usage//[ %]/} # Remove espaço e %
+            if [[ "$raid_usage" =~ ^[0-9]+$ ]] && [[ "$raid_usage" -gt "$max_usage" ]]; then
+                max_usage=$raid_usage
+            fi
+        fi
+    fi
+    
+    if [ "$max_usage" -eq 0 ]; then
+        echo "N/A"
+    else
+        echo "${max_usage}%"
+    fi
+}
+
+#
+# Constrói a mensagem final para o Telegram.
+#
+build_report_message() {
+    local disk_report_lines=$1
+    local smart_issues=$2
+    local critical_usage=$3
+    local warning_usage=$4
+    local has_issues=$5
+
+    local message=""
+    if [ "$TEST_MODE" = true ]; then
+        message="🧪 *Teste do Disk Health - ${HOSTNAME}*\n\n"
+        message+="✅ *Sistema de monitoramento funcionando corretamente*\n\n"
+        message+="📊 *Discos Monitorados:*\n${disk_report_lines}"
         
-        # Formato SATA/HDD: "194 Temperature_Celsius ... 42"
-        temp_sata=$(echo "$temp_output" | grep -E 'Temperature_Celsius' | awk '{print $10}')
-
-        if [[ "$temp_nvme" =~ ^[0-9]+$ ]]; then
-            temperature="$temp_nvme"
-        elif [[ "$temp_sata" =~ ^[0-9]+$ ]]; then
-            temperature="$temp_sata"
+        if [ "$has_issues" = true ]; then
+            message+="\n\n⚠️ *Problemas detectados (modo teste):*"
         else
-            # Fallback para outros formatos, como Airflow_Temperature_Cel
-            temp_other=$(echo "$temp_output" | grep -E '(Temperature|Airflow_Temperature)' | awk '{print $10}')
-            if ! [[ "$temp_other" =~ ^[0-9]+$ ]]; then
-                temp_other=$(echo "$temp_output" | grep -E '(Temperature|Airflow_Temperature)' | awk '{print $9}')
-            fi
-            if [[ "$temp_other" =~ ^[0-9]+$ ]]; then
-                temperature="$temp_other"
-            fi
+            message+="\n\n✅ *Status:* Nenhum problema detectado"
         fi
+        message+="\n\n🕐 Teste: $(date '+%Y-%m-%d %H:%M:%S')"
+    else
+        message="🚨 *Disk Alert - ${HOSTNAME}*\n\n"
+        message+="📊 *Status dos Discos:*\n${disk_report_lines}"
     fi
-    
-    # Status do disco
-    status="✅ OK"
-    if [ -n "$health_status" ] && [ "$health_status" != "PASSED" ]; then
-        status="❌ $health_status"
-        SMART_ISSUES+="$disk_name: $health_status"$'\n'
-        HAS_ISSUES=true
-    elif [ -n "$temperature" ] && [[ "$temperature" =~ ^[0-9]+$ ]]; then
-        # Verificar limites de temperatura
-        if [ "$temperature" -ge 70 ]; then
-            status="🔥 CRÍTICA (${temperature}°C)"
-            HAS_ISSUES=true
-        elif [ "$temperature" -ge 55 ]; then
-            status="⚠️ ALTA (${temperature}°C)"
-            HAS_ISSUES=true
-        fi
+
+    if [ -n "$smart_issues" ]; then
+        message+="\n\n*🔧 Problemas SMART:*\n```\n${smart_issues}```"
     fi
-    
-    DISK_STATUS["$disk_name"]="$status"
-    DISK_TEMP["$disk_name"]="$temperature"
-done
+    if [ -n "$critical_usage" ]; then
+        message+="\n\n*🚨 Uso Crítico (≥${CRITICAL_USAGE_THRESHOLD}%):*\n```\n${critical_usage}```"
+    fi
+    if [ -n "$warning_usage" ]; then
+        message+="\n\n*⚠️ Uso Alto (≥${WARNING_USAGE_THRESHOLD}%):*\n```\n${warning_usage}```"
+    fi
 
-# --- Verificação de Uso de Disco ---
-CRITICAL_USAGE_DISKS=""
-WARNING_USAGE_DISKS=""
+    echo -e "$message"
+}
 
-# Obter informações de uso de disco (compatível com Linux e macOS)
-if command -v df >/dev/null 2>&1; then
-    # Tentar formato Linux primeiro, depois macOS
-    df_output=$(df -H --output=source,pcent,target 2>/dev/null || df -H 2>/dev/null)
-    
-    if [ $? -eq 0 ]; then
-        while read -r line; do
-            if [ -z "$line" ] || [[ "$line" == "Filesystem"* ]]; then
-                continue
-            fi
-            
-            # Para Linux (com --output=source,pcent,target)
-            if df -H --output=source,pcent,target >/dev/null 2>&1; then
-                source=$(echo "$line" | awk '{print $1}')
-                pcent=$(echo "$line" | awk '{print $2}')
-                target=$(echo "$line" | awk '{print $3}')
-            else
-                # Para macOS (formato padrão df -H)
-                source=$(echo "$line" | awk '{print $1}')
-                pcent=$(echo "$line" | awk '{print $5}')
-                target=$(echo "$line" | awk '{print $9}')
-            fi
-            
-            # Pular sistemas de arquivos temporários
-            if [[ "$source" == "tmpfs" ]] || [[ "$source" == "devtmpfs" ]] || \
-               [[ "$source" == "squashfs" ]] || [[ "$target" == "/dev" ]] || \
-               [[ "$target" == *"/System/"* ]] || [[ "$target" == *"CoreSimulator"* ]]; then
-                continue
-            fi
-            
-            usage=$(echo "$pcent" | tr -d '[:space:]%')
-            
-            if [[ "$usage" =~ ^[0-9]+$ ]]; then
-                if [ "$usage" -ge 85 ]; then
-                    CRITICAL_USAGE_DISKS+="$target ($source) - ${pcent}"$'\n'
-                    HAS_ISSUES=true
-                elif [ "$usage" -ge 70 ]; then
-                    WARNING_USAGE_DISKS+="$target ($source) - ${pcent}"$'\n'
-                    HAS_ISSUES=true
+# --- Lógica Principal de Execução ---
+main() {
+    # 1. Processar argumentos da linha de comando
+    for arg in "$@"; do
+        case $arg in
+            --test) TEST_MODE=true ;;
+            --f) FORCE_SEND=true ;;
+        esac
+    done
+
+    # 2. Carregar configuração
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+    else
+        echo "ERRO: Arquivo de configuração $CONFIG_FILE não encontrado." >&2
+        exit 1
+    fi
+    touch "$HASH_FILE"
+
+    # 3. Descobrir e verificar cada disco
+    local disks_to_check=$(discover_disks)
+    log_debug "Discos a serem verificados: $disks_to_check"
+
+    local disk_report_lines=""
+    local hash_state=""
+    local smart_issues_summary=""
+    local has_issues=false
+
+    for disk_path in $disks_to_check; do
+        if [ ! -b "$disk_path" ]; then continue; fi
+        
+        local disk_name=$(basename "$disk_path")
+        log_debug "Verificando disco: $disk_path (nome: $disk_name)"
+
+        # Obter opções de dispositivo (para SAT)
+        local device_opts=""
+        if [ -n "$MAP_DEVICE_OPTS" ]; then
+            for mapping in $MAP_DEVICE_OPTS; do
+                local dev=$(echo "$mapping" | cut -d'=' -f1)
+                local opt=$(echo "$mapping" | cut -d'=' -f2)
+                if [ "$disk_name" = "$dev" ]; then
+                    device_opts="-d $opt"
+                    break
                 fi
+            done
+        fi
+
+        # Coletar informações
+        local smart_info=($(get_smart_info "$disk_path" "$device_opts"))
+        local health_status=${smart_info[0]}
+        local temperature=${smart_info[1]}
+        local usage=$(get_disk_usage "$disk_name")
+        
+        # Determinar o status do disco
+        local status_emoji="✅"
+        local status_text="OK"
+        if [ "$health_status" != "PASSED" ]; then
+            status_emoji="❌"
+            status_text="$health_status"
+            smart_issues_summary+="${disk_name}: $health_status\n"
+            has_issues=true
+        elif [[ "$temperature" =~ ^[0-9]+$ ]]; then
+            if [ "$temperature" -ge "$CRITICAL_TEMP" ]; then
+                status_emoji="🔥"
+                status_text="CRÍTICA (${temperature}°C)"
+                has_issues=true
+            elif [ "$temperature" -ge "$HIGH_TEMP" ]; then
+                status_emoji="⚠️"
+                status_text="ALTA (${temperature}°C)"
+                has_issues=true
             fi
-        done <<< "$df_output"
-    fi
-fi
+        fi
+        
+        local final_status="$status_emoji $status_text"
+        local temp_info=$([ "$temperature" = "N/A" ] && echo "N/A" || echo "${temperature}°C")
 
-# --- Geração do Estado Atual e Hash (nome e status de todos os discos) ---
-# Para a hash, consideramos nome e status de TODOS os discos para detectar mudanças
-HASH_STATE=""
+        # Construir linha do relatório e estado para o hash
+        disk_report_lines+="${disk_name}: ${final_status} | ${usage} | ${temp_info}\n"
+        
+        local basic_status="OK"
+        if [[ "$final_status" == *"❌"* ]]; then basic_status="FAILING";
+        elif [[ "$final_status" == *"🔥"* ]]; then basic_status="CRITICAL";
+        elif [[ "$final_status" == *"⚠️"* ]]; then basic_status="WARNING";
+        fi
+        hash_state+="$disk_name:$basic_status\n"
+    done
 
-# Gerar hash baseada no nome e status de cada disco
-for disk in $DISKS_TO_CHECK; do
-    if [ ! -b "$disk" ]; then
-        continue
-    fi
-    
-    disk_name=$(basename "$disk")
-    status="${DISK_STATUS[$disk_name]:-"UNKNOWN"}"
-    
-    # Extrair apenas o status básico (sem temperatura específica)
-    basic_status="OK"
-    if [[ "$status" == *"❌"* ]]; then
-        basic_status="FAILING"
-    elif [[ "$status" == *"🔥"* ]]; then
-        basic_status="CRITICAL"
-    elif [[ "$status" == *"⚠️"* ]]; then
-        basic_status="WARNING"
-    fi
-    
-    HASH_STATE+="$disk_name:$basic_status"$'\n'
-done
-
-# Adicionar problemas de uso crítico à hash
-if [ -n "$CRITICAL_USAGE_DISKS" ]; then
-    HASH_STATE+="CRITICAL_USAGE:"$'\n'"$CRITICAL_USAGE_DISKS"
-fi
-
-NEW_HASH=$(echo "$HASH_STATE" | md5sum | awk '{print $1}')
-OLD_HASH=$(cat "$HASH_FILE")
-
-# --- Envio de Alerta ---
-SHOULD_SEND_ALERT=false
-
-# Lógica para determinar se deve enviar alerta
-if [ "$TEST_MODE" = true ]; then
-    SHOULD_SEND_ALERT=true
-elif [ "$FORCE_SEND" = true ] || [ "$NEW_HASH" != "$OLD_HASH" ]; then
-    if [ "$HAS_ISSUES" = true ]; then
-        SHOULD_SEND_ALERT=true
-    fi
-fi
-
-# Função para gerar listagem de discos
-generate_disk_list() {
-    local disk_list=""
-    for disk in $DISKS_TO_CHECK; do
-        if [ ! -b "$disk" ]; then
+    # 4. Verificar uso de disco globalmente para resumo de alertas
+    local critical_usage_summary=""
+    local warning_usage_summary=""
+    while read -r source pcent target; do
+        if [[ "$source" == "tmpfs" || "$source" == "devtmpfs" || "$source" == "squashfs" || "$target" == "/dev" ]]; then
             continue
         fi
+        local usage_num=${pcent//%/}
+        if [[ "$usage_num" =~ ^[0-9]+$ ]]; then
+            if [ "$usage_num" -ge "$CRITICAL_USAGE_THRESHOLD" ]; then
+                critical_usage_summary+="$target ($source) - ${pcent}\n"
+                has_issues=true
+            elif [ "$usage_num" -ge "$WARNING_USAGE_THRESHOLD" ]; then
+                warning_usage_summary+="$target ($source) - ${pcent}\n"
+                has_issues=true
+            fi
+        fi
+    done < <(df -H --output=source,pcent,target | tail -n +2)
+
+    if [ -n "$critical_usage_summary" ]; then
+        hash_state+="CRITICAL_USAGE:$critical_usage_summary"
+    fi
+
+    # 5. Decidir se o alerta deve ser enviado
+    local new_hash=$(echo -n -e "$hash_state" | md5sum | awk '{print $1}')
+    local old_hash=$(cat "$HASH_FILE")
+    log_debug "Novo Hash: $new_hash | Hash Antigo: $old_hash"
+
+    local should_send_alert=false
+    if [ "$TEST_MODE" = true ] || [ "$FORCE_SEND" = true ]; then
+        should_send_alert=true
+    elif [ "$new_hash" != "$old_hash" ]; then
+        # Envia alerta em qualquer mudança de estado (problema novo ou resolvido)
+        should_send_alert=true
+    fi
+    
+    # 6. Enviar Alerta
+    if [ "$should_send_alert" = true ]; then
+        log_debug "Alteração de estado detectada. Enviando alerta."
+        if [ "$FORCE_SEND" = false ] && [ "$TEST_MODE" = false ]; then
+            echo -n "$new_hash" > "$HASH_FILE"
+        fi
         
-        disk_name=$(basename "$disk")
-        status="${DISK_STATUS[$disk_name]:-"❓ UNKNOWN"}"
-        temp="${DISK_TEMP[$disk_name]}"
+        local message=$(build_report_message "$disk_report_lines" "$smart_issues_summary" "$critical_usage_summary" "$warning_usage_summary" "$has_issues")
+        send_telegram_alert "$message"
         
-        # Obter uso de disco se disponível
-        usage="N/A"
-        max_usage=0
-        
-        # Debug: mostrar informações se for teste
         if [ "$TEST_MODE" = true ]; then
-            echo "[DEBUG] Verificando uso para disco: $disk (nome: $disk_name)" >&2
-            echo "[DEBUG] Saída df completa:" >&2
-            df -h | grep -E "(Filesystem|$disk)" >&2
+            echo "Mensagem de teste enviada com sucesso!"
         fi
-        
-        # Buscar uso em todas as partições montadas que pertencem a este disco
-        while read -r filesystem size used avail percent mountpoint; do
-            if [ -z "$filesystem" ] || [[ "$filesystem" == "Filesystem" ]]; then
-                continue
-            fi
-            
-            # Debug: mostrar cada linha processada
-            if [ "$TEST_MODE" = true ]; then
-                echo "[DEBUG] Analisando: $filesystem -> $percent (mountpoint: $mountpoint)" >&2
-            fi
-            
-            # Verificar se o filesystem pertence ao nosso disco
-            # Formatos suportados: /dev/sda1, /dev/sdb2, /dev/nvme0n1p1, etc.
-            if [[ "$filesystem" == "$disk"* ]] && [[ "$filesystem" != "$disk" ]]; then
-                
-                if [ "$TEST_MODE" = true ]; then
-                    echo "[DEBUG] *** MATCH encontrado: $filesystem pertence a $disk ***" >&2
-                fi
-                
-                # Extrair apenas o número do percentual
-                percent_num=$(echo "$percent" | tr -d '%')
-                
-                if [[ "$percent_num" =~ ^[0-9]+$ ]] && [ "$percent_num" -gt "$max_usage" ]; then
-                    max_usage=$percent_num
-                    usage="${percent_num}%"
-                    
-                    if [ "$TEST_MODE" = true ]; then
-                        echo "[DEBUG] *** Uso atualizado para $disk_name: $usage ***" >&2
-                    fi
-                fi
-            fi
-        done < <(df -h | tail -n +2)
-        
-        # Se não encontrou partições montadas, verificar se faz parte de RAID
-        if [ "$usage" = "N/A" ]; then
-            # Verificar se este disco faz parte de algum device RAID
-            if [ -f /proc/mdstat ]; then
-                raid_device=$(grep "$disk_name" /proc/mdstat 2>/dev/null | head -1)
-                if [ -n "$raid_device" ]; then
-                    # Extrair nome do device RAID (md0, md1, etc)
-                    md_name=$(echo "$raid_device" | awk '{print $1}' | sed 's/://')
-                    
-                    if [ "$TEST_MODE" = true ]; then
-                        echo "[DEBUG] $disk_name faz parte do RAID: $md_name" >&2
-                    fi
-                    
-                    # Buscar uso do device RAID
-                    while read -r filesystem size used avail percent mountpoint; do
-                        if [[ "$filesystem" == "/dev/$md_name" ]]; then
-                            percent_num=$(echo "$percent" | tr -d '%')
-                            if [[ "$percent_num" =~ ^[0-9]+$ ]]; then
-                                usage="${percent_num}%"
-                                
-                                if [ "$TEST_MODE" = true ]; then
-                                    echo "[DEBUG] *** Uso RAID encontrado para $disk_name: $usage via $md_name ***" >&2
-                                fi
-                                break
-                            fi
-                        fi
-                    done < <(df -h | tail -n +2)
-                fi
-            fi
-            
-            # Debug se ainda não encontrou
-            if [ "$usage" = "N/A" ] && [ "$TEST_MODE" = true ]; then
-                echo "[DEBUG] Nenhuma partição montada ou RAID encontrado para $disk" >&2
-                echo "[DEBUG] Partições existentes:" >&2
-                ls -la ${disk}* 2>/dev/null | head -5 >&2
-                echo "[DEBUG] Verificando /proc/mdstat:" >&2
-                grep -E "(active|$disk_name)" /proc/mdstat 2>/dev/null >&2
-            fi
-        fi
-        
-        # Obter temperatura ou definir como N/A
-        temp_info="N/A"
-        if [ -n "$temp" ] && [[ "$temp" =~ ^[0-9]+$ ]]; then
-            temp_info="${temp}°C"
-        fi
-        
-        # Formato fixo: nome: status | uso% | temperatura
-        disk_list+="${disk_name}: ${status} | ${usage} | ${temp_info}"
-    done
-    echo "$disk_list"
+    else
+        log_debug "Nenhuma mudança de estado. Alerta não enviado."
+    fi
 }
 
-# Envia alerta se necessário
-if [ "$SHOULD_SEND_ALERT" = true ]; then
-    # Atualiza hash apenas se não for modo de força
-    if [ "$FORCE_SEND" = false ]; then
-        echo "$NEW_HASH" > "$HASH_FILE"
-    fi
-    
-    # Gerar listagem de discos
-    DISK_LIST=$(generate_disk_list)
-    
-    if [ "$TEST_MODE" = true ]; then
-        # Mensagem de teste
-        MESSAGE="🧪 *Teste do Disk Health - ${HOSTNAME}*
-
-✅ *Sistema de monitoramento funcionando corretamente*
-
-📊 *Discos Monitorados:*
-${DISK_LIST}"
-        
-        if [ "$HAS_ISSUES" = true ]; then
-            MESSAGE+="
-⚠️ *Problemas detectados (modo teste):*"
-            
-            if [ -n "$SMART_ISSUES" ]; then
-                MESSAGE+="
-
-*🔧 Problemas SMART:*
-\`\`\`
-${SMART_ISSUES}\`\`\`"
-            fi
-
-            if [ -n "$CRITICAL_USAGE_DISKS" ]; then
-                MESSAGE+="
-
-*🚨 Uso Crítico (≥85%):*
-\`\`\`
-${CRITICAL_USAGE_DISKS}\`\`\`"
-            fi
-
-            if [ -n "$WARNING_USAGE_DISKS" ]; then
-                MESSAGE+="
-
-*⚠️ Uso Alto (≥70%):*
-\`\`\`
-${WARNING_USAGE_DISKS}\`\`\`"
-            fi
-        else
-            MESSAGE+="
-
-✅ *Status:* Nenhum problema detectado"
-        fi
-        
-        MESSAGE+="
-
-🕐 Teste: $(date '+%Y-%m-%d %H:%M:%S')"
-        
-    else
-        # Mensagem normal de alerta
-        MESSAGE="🚨 *Disk Alert - ${HOSTNAME}*
-
-📊 *Status dos Discos:*
-${DISK_LIST}"
-
-        if [ -n "$SMART_ISSUES" ]; then
-            MESSAGE+="
-
-*🔧 Problemas SMART:*
-\`\`\`
-${SMART_ISSUES}\`\`\`"
-        fi
-
-        if [ -n "$CRITICAL_USAGE_DISKS" ]; then
-            MESSAGE+="
-
-*🚨 Uso Crítico (≥85%):*
-\`\`\`
-${CRITICAL_USAGE_DISKS}\`\`\`"
-        fi
-
-        if [ -n "$WARNING_USAGE_DISKS" ]; then
-            MESSAGE+="
-
-*⚠️ Uso Alto (≥70%):*
-\`\`\`
-${WARNING_USAGE_DISKS}\`\`\`"
-        fi
-    fi
-    
-    # Envia a mensagem para o Telegram
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="$MESSAGE" \
-        -d parse_mode="Markdown" > /dev/null
-    
-    if [ "$TEST_MODE" = true ]; then
-        echo "Mensagem de teste enviada com sucesso!"
-    fi
-fi
-
-exit 0
-'
-    done
-    echo "$disk_list"
-}
-
-# Envia alerta se necessário
-if [ "$SHOULD_SEND_ALERT" = true ]; then
-    # Atualiza hash apenas se não for modo de força
-    if [ "$FORCE_SEND" = false ]; then
-        echo "$NEW_HASH" > "$HASH_FILE"
-    fi
-    
-    # Gerar listagem de discos
-    DISK_LIST=$(generate_disk_list)
-    
-    if [ "$TEST_MODE" = true ]; then
-        # Mensagem de teste
-        MESSAGE="🧪 *Teste do Disk Health - ${HOSTNAME}*
-
-✅ *Sistema de monitoramento funcionando corretamente*
-
-📊 *Discos Monitorados:*
-${DISK_LIST}"
-        
-        if [ "$HAS_ISSUES" = true ]; then
-            MESSAGE+="
-⚠️ *Problemas detectados (modo teste):*"
-            
-            if [ -n "$SMART_ISSUES" ]; then
-                MESSAGE+="
-
-*🔧 Problemas SMART:*
-\`\`\`
-${SMART_ISSUES}\`\`\`"
-            fi
-
-            if [ -n "$CRITICAL_USAGE_DISKS" ]; then
-                MESSAGE+="
-
-*🚨 Uso Crítico (≥85%):*
-\`\`\`
-${CRITICAL_USAGE_DISKS}\`\`\`"
-            fi
-
-            if [ -n "$WARNING_USAGE_DISKS" ]; then
-                MESSAGE+="
-
-*⚠️ Uso Alto (≥70%):*
-\`\`\`
-${WARNING_USAGE_DISKS}\`\`\`"
-            fi
-        else
-            MESSAGE+="
-
-✅ *Status:* Nenhum problema detectado"
-        fi
-        
-        MESSAGE+="
-
-🕐 Teste: $(date '+%Y-%m-%d %H:%M:%S')"
-        
-    else
-        # Mensagem normal de alerta
-        MESSAGE="🚨 *Disk Alert - ${HOSTNAME}*
-
-📊 *Status dos Discos:*
-${DISK_LIST}"
-
-        if [ -n "$SMART_ISSUES" ]; then
-            MESSAGE+="
-
-*🔧 Problemas SMART:*
-\`\`\`
-${SMART_ISSUES}\`\`\`"
-        fi
-
-        if [ -n "$CRITICAL_USAGE_DISKS" ]; then
-            MESSAGE+="
-
-*🚨 Uso Crítico (≥85%):*
-\`\`\`
-${CRITICAL_USAGE_DISKS}\`\`\`"
-        fi
-
-        if [ -n "$WARNING_USAGE_DISKS" ]; then
-            MESSAGE+="
-
-*⚠️ Uso Alto (≥70%):*
-\`\`\`
-${WARNING_USAGE_DISKS}\`\`\`"
-        fi
-    fi
-    
-    # Envia a mensagem para o Telegram
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="$MESSAGE" \
-        -d parse_mode="Markdown" > /dev/null
-    
-    if [ "$TEST_MODE" = true ]; then
-        echo "Mensagem de teste enviada com sucesso!"
-    fi
-fi
-
-exit 0
+# --- Ponto de Entrada do Script ---
+# Executa a função principal, passando todos os argumentos da linha de comando.
+main "$@"
