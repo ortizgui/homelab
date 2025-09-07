@@ -181,7 +181,7 @@ build_report_message() {
         fi
         message+="\n\n🕐 Teste: $(date '+%Y-%m-%d %H:%M:%S')"
     else
-        message="🚨 *Disk Alert - ${HOSTNAME}*\n\n"
+        message="🚨 *Disk Report - ${HOSTNAME}*\n\n"
         message+="📊 *Status dos Discos:*\n${disk_report_lines}"
     fi
 
