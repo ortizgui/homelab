@@ -151,6 +151,8 @@ journalctl -t disk-health -n 50 --no-pager
 - `--test --f`: Força o envio da mensagem mesmo que o último estado seja igual (ignora o controle de hash)
 - Sem parâmetros: Execução normal (apenas envia alerta em caso de mudança de estado)
 
+**Nota importante**: Este script foi desenvolvido para sistemas Linux (Debian/Ubuntu/Armbian) onde os discos são nomeados como `/dev/sda`, `/dev/sdb`, `/dev/nvme0n1`, etc. Se você está testando no macOS, os discos sda/sdb/sdc não existem, por isso aparecem sem % de uso. O script funcionará corretamente quando executado no sistema Linux de destino.
+
 ### Exemplo de mensagem de teste:
 
 ```
@@ -159,13 +161,13 @@ journalctl -t disk-health -n 50 --no-pager
 ✅ Sistema de monitoramento funcionando corretamente
 
 📊 Discos Monitorados:
-sda: ✅ OK | 45°C | 23%
-sdb: ⚠️ ALTA (58°C) | 58°C | 67%
-nvme0n1: ✅ OK | 42°C | 15%
+sda: ✅ OK | 23% | 45°C
+sdb: ⚠️ ALTA (58°C) | 67% | 58°C
+nvme0n1: ✅ OK | 15% | 42°C
 
 ✅ Status: Nenhum problema detectado
 
-🕐 Teste: 2024-01-15 14:30:25
+🕐 Teste: 2025-09-07 00:31:47
 ```
 
 ### Exemplo de mensagem de alerta:
@@ -174,9 +176,9 @@ nvme0n1: ✅ OK | 42°C | 15%
 🚨 Disk Alert - hostname
 
 📊 Status dos Discos:
-sda: ❌ FAILING_NOW | 65°C | 23%
-sdb: 🔥 CRÍTICA (72°C) | 72°C | 67%
-nvme0n1: ✅ OK | 42°C | 15%
+sda: ❌ FAILING_NOW | 23% | 65°C
+sdb: 🔥 CRÍTICA (72°C) | 67% | 72°C
+nvme0n1: ✅ OK | 15% | 42°C
 
 🔧 Problemas SMART:
 sda: FAILING_NOW
