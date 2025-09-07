@@ -158,22 +158,34 @@ journalctl -t disk-health -n 50 --no-pager
 
 ✅ Sistema de monitoramento funcionando corretamente
 
-📊 Status atual:
-✅ Nenhum problema detectado
+📊 Discos Monitorados:
+sda: ✅ OK | 45°C | 23%
+sdb: ⚠️ ALTA (58°C) | 58°C | 67%
+nvme0n1: ✅ OK | 42°C | 15%
 
-🕐 Teste executado em: 2024-01-15 14:30:25
+✅ Status: Nenhum problema detectado
+
+🕐 Teste: 2024-01-15 14:30:25
 ```
 
 ### Exemplo de mensagem de alerta:
 
 ```
-Disk Alert for hostname
+🚨 Disk Alert - hostname
 
-CRITICAL Usage (>=85%): ‼️
-/home (/dev/sda1) at 87%
+📊 Status dos Discos:
+sda: ❌ FAILING_NOW | 65°C | 23%
+sdb: 🔥 CRÍTICA (72°C) | 72°C | 67%
+nvme0n1: ✅ OK | 42°C | 15%
 
-WARNING Usage (>=70%): ⚠️
-/var (/dev/sda2) at 75%
+🔧 Problemas SMART:
+sda: FAILING_NOW
+
+🚨 Uso Crítico (≥85%):
+/home (/dev/sda1) - 87%
+
+⚠️ Uso Alto (≥70%):
+/var (/dev/sdb2) - 75%
 ```
 
 If RAID is degraded or any SMART critical attribute trips, you’ll see 🟡 WARN or 🔴 CRITICAL with reasons.
