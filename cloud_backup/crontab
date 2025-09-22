@@ -1,0 +1,10 @@
+# Restic Backup Crontab
+# Weekly backup every Sunday at 3:00 AM
+0 3 * * 0 docker exec backup-restic /scripts/backup.sh weekly >> /var/log/backup/cron.log 2>&1
+
+# Monthly backup on the last day of the month at 3:30 AM
+# This cron expression runs on the last day of every month
+30 3 28-31 * * [ $(date -d "+1 day" +\%d) -eq 1 ] && docker exec backup-restic /scripts/backup.sh monthly >> /var/log/backup/cron.log 2>&1
+
+# Optional: Run integrity check monthly on the 15th at 4:00 AM
+0 4 15 * * docker exec backup-restic restic check --read-data-subset=10% >> /var/log/backup/cron.log 2>&1

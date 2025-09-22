@@ -1,0 +1,80 @@
+version: "3.8"
+
+services:
+  backup-restic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: backup-restic
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+    volumes:
+      # Read-only mounts for backup sources
+      - /mnt/raid1:/backup-sources/raid1:ro
+      - /mnt/m2:/backup-sources/m2:ro
+      # Persistent storage for restic cache and rclone config
+      - restic-cache:/root/.cache/restic
+      - restic-config:/root/.config
+      - ./scripts:/scripts:ro
+      # Log directory
+      - backup-logs:/var/log/backup
+    networks:
+      - backup-net
+    healthcheck:
+      test: ["/scripts/healthcheck.sh"]
+      interval: 6h
+      timeout: 30s
+      retries: 3
+      start_period: 10s
+    command: ["tail", "-f", "/dev/null"]  # Keep container running
+
+  scheduler:
+    image: alpine:3.19
+    container_name: backup-scheduler
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+    volumes:
+      - ./crontab:/etc/crontabs/root:ro
+      - ./scripts:/scripts:ro
+      - backup-logs:/var/log/backup
+    networks:
+      - backup-net
+    depends_on:
+      - backup-restic
+    command: ["crond", "-f", "-l", "2"]
+
+  # Optional notification service
+  notify:
+    image: curlimages/curl:8.5.0
+    container_name: backup-notify
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+    volumes:
+      - ./scripts:/scripts:ro
+      - backup-logs:/var/log/backup:ro
+    networks:
+      - backup-net
+    profiles:
+      - notifications
+    command: ["tail", "-f", "/dev/null"]
+
+volumes:
+  restic-cache:
+    driver: local
+  restic-config:
+    driver: local
+  backup-logs:
+    driver: local
+
+networks:
+  backup-net:
+    driver: bridge
