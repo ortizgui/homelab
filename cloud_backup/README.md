@@ -16,16 +16,25 @@ A secure, automated backup solution using **Restic** with **rclone** backend, ru
 
 ## Quick Start
 
-### 1. Configure rclone (Cloud Provider)
-
-First, configure rclone for your cloud provider:
+### 1. Initial Setup
 
 ```bash
-# Install rclone locally for configuration
-curl https://rclone.org/install.sh | sudo bash
+# Clone or download this repository
+git clone <repository-url>
+cd cloud_backup
 
-# Configure your cloud provider
-rclone config
+# Run the automated setup script
+sudo ./setup.sh
+
+# The script will create the directory structure in:
+# /mnt/m2/docker/cloud_backup/
+```
+
+### 2. Configure rclone (Cloud Provider)
+
+```bash
+# Use the helper script to configure rclone
+/mnt/m2/docker/cloud_backup/configure-rclone.sh
 
 # Example for Google Drive:
 # - Choose "drive" for Google Drive
@@ -33,19 +42,28 @@ rclone config
 # - Name your remote (e.g., "gdrive")
 
 # Test the connection
-rclone lsd gdrive:
+RCLONE_CONFIG="/mnt/m2/docker/cloud_backup/data/rclone-config/rclone.conf" rclone lsd gdrive:
 ```
 
-### 2. Setup the Backup System
+### 3. Configure the System
 
 ```bash
-# Clone or download this repository
-git clone <repository-url>
-cd cloud_backup
+# Edit the configuration file
+nano /mnt/m2/docker/cloud_backup/.env
 
-# Copy and configure environment variables
-cp .env.example .env
-nano .env  # Edit with your settings
+# Key settings to configure:
+# - RESTIC_PASSWORD (strong encryption password)
+# - RESTIC_REPOSITORY (e.g., rclone:gdrive:/backups/restic)
+# - BACKUP_PATHS (e.g., /mnt/raid1:/mnt/m2)
+# - TELEGRAM_BOT_TOKEN (for notifications)
+# - TELEGRAM_CHAT_ID (for notifications)
+```
+
+### 4. Start the System
+
+```bash
+# Navigate to the configuration directory
+cd /mnt/m2/docker/cloud_backup
 
 # Build and start the containers
 docker compose up -d
@@ -55,7 +73,7 @@ docker compose ps
 docker compose logs
 ```
 
-### 3. Test Manual Backup
+### 5. Test Manual Backup
 
 ```bash
 # Run a test weekly backup
@@ -67,6 +85,29 @@ docker exec backup-restic /scripts/backup.sh weekly
 # Check backup status
 docker exec backup-restic restic snapshots
 ```
+
+## Directory Structure
+
+All configuration, data, and logs are stored in `/mnt/m2/docker/cloud_backup/`:
+
+```
+/mnt/m2/docker/cloud_backup/
+├── .env                          # Main configuration
+├── docker-compose.yml            # Container setup
+├── scripts/                      # Backup scripts
+├── data/                         # Persistent data
+│   ├── restic-cache/             # Restic cache
+│   └── rclone-config/            # rclone configs
+└── logs/                         # Operation logs
+```
+
+**Benefits:**
+- ✅ Centralized configuration and data
+- ✅ Survives container rebuilds
+- ✅ Easy to backup/restore system config
+- ✅ Clear separation of data types
+
+See [DIRECTORY_STRUCTURE.md](DIRECTORY_STRUCTURE.md) for complete details.
 
 ## Configuration
 
@@ -129,6 +170,9 @@ The system runs automated backups according to this schedule:
 ### Manual Backup Operations
 
 ```bash
+# Navigate to config directory
+cd /mnt/m2/docker/cloud_backup
+
 # Weekly backup
 docker exec backup-restic /scripts/backup.sh weekly
 
@@ -146,6 +190,9 @@ docker exec backup-restic restic stats
 ### Health Monitoring
 
 ```bash
+# Navigate to config directory
+cd /mnt/m2/docker/cloud_backup
+
 # Check system health
 docker exec backup-restic /scripts/healthcheck.sh
 
@@ -155,6 +202,9 @@ docker compose ps
 # View logs
 docker compose logs backup-restic
 docker compose logs scheduler
+
+# View log files directly
+tail -f /mnt/m2/docker/cloud_backup/logs/backup-*.log
 ```
 
 ### Preflight Checks
@@ -397,13 +447,16 @@ docker exec backup-restic /scripts/preflight.sh
 
 ```bash
 # View recent backup logs
-docker exec backup-restic find /var/log/backup -name "backup-*.log" -mtime -1
+find /mnt/m2/docker/cloud_backup/logs -name "backup-*.log" -mtime -1
 
 # View specific log
-docker exec backup-restic tail -f /var/log/backup/backup-20240115-030000.log
+tail -f /mnt/m2/docker/cloud_backup/logs/backup-20240115-030000.log
 
 # Check for errors
-docker exec backup-restic grep -r "ERROR" /var/log/backup/
+grep -r "ERROR" /mnt/m2/docker/cloud_backup/logs/
+
+# View logs from container
+docker exec backup-restic find /var/log/backup -name "backup-*.log" -mtime -1
 ```
 
 ### Performance Optimization
@@ -477,18 +530,25 @@ RESTIC_PASSWORD=new-password restic init
 ### Upgrading
 
 ```bash
+# Navigate to config directory
+cd /mnt/m2/docker/cloud_backup
+
 # Update container images
 docker compose pull
 docker compose up -d
 
-# Check for script updates
+# Check for script updates (if using git)
 git pull origin main
+./setup.sh --force  # Re-run setup to update scripts
 docker compose restart
 ```
 
 ### Monitoring
 
 ```bash
+# Navigate to config directory
+cd /mnt/m2/docker/cloud_backup
+
 # Health check status
 docker compose ps
 
@@ -498,8 +558,14 @@ docker exec backup-restic restic snapshots
 # Repository statistics
 docker exec backup-restic restic stats
 
-# Recent errors
+# Recent errors (from host)
+grep -r "ERROR" /mnt/m2/docker/cloud_backup/logs/ | tail -10
+
+# Recent errors (from container)
 docker exec backup-restic grep -r "ERROR" /var/log/backup/ | tail -10
+
+# Check disk usage
+du -sh /mnt/m2/docker/cloud_backup/*
 ```
 
 ## Architecture
@@ -521,17 +587,36 @@ docker exec backup-restic grep -r "ERROR" /var/log/backup/ | tail -10
 ### File Structure
 
 ```
-cloud_backup/
-├── docker-compose.yml      # Container orchestration
-├── Dockerfile             # Custom restic+rclone image
-├── .env.example           # Configuration template
-├── crontab                # Backup schedule
-├── scripts/
-│   ├── backup.sh          # Main backup logic
-│   ├── preflight.sh       # System checks
-│   ├── healthcheck.sh     # Health monitoring
-│   └── restore.sh         # Restore operations
-└── README.md              # This file
+/mnt/m2/docker/cloud_backup/    # Main configuration directory
+├── docker-compose.yml          # Container orchestration
+├── Dockerfile                  # Custom restic+rclone image
+├── .env                        # Main configuration file
+├── .env.example               # Configuration template
+├── crontab                    # Backup schedule
+├── setup.sh                   # Automated setup script
+├── configure-rclone.sh        # rclone configuration helper
+├── scripts/                   # Executable scripts
+│   ├── backup.sh              # Main backup logic
+│   ├── preflight.sh           # System checks
+│   ├── healthcheck.sh         # Health monitoring
+│   ├── restore.sh             # Restore operations
+│   └── notify.sh              # Telegram notifications
+├── data/                      # Persistent application data
+│   ├── restic-cache/          # Restic performance cache
+│   └── rclone-config/         # rclone remote configurations
+├── logs/                      # Operation logs and status
+│   ├── backup-*.log           # Backup operation logs
+│   ├── restore-*.log          # Restore operation logs
+│   ├── cron.log              # Scheduled task logs
+│   ├── last_backup_timestamp  # Health check timestamp
+│   └── last_check_timestamp   # Integrity check timestamp
+├── config/                    # Additional configurations
+└── README.md                  # Complete documentation
+
+Original development directory:
+cloud_backup/                  # Development/source directory
+├── All source files...
+└── config -> /mnt/m2/docker/cloud_backup/  # Symlink to config
 ```
 
 ## Support

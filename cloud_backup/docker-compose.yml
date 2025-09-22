@@ -15,12 +15,12 @@ services:
       # Read-only mounts for backup sources
       - /mnt/raid1:/backup-sources/raid1:ro
       - /mnt/m2:/backup-sources/m2:ro
-      # Persistent storage for restic cache and rclone config
-      - restic-cache:/root/.cache/restic
-      - restic-config:/root/.config
-      - ./scripts:/scripts:ro
-      # Log directory
-      - backup-logs:/var/log/backup
+      # Persistent storage for restic cache and rclone config in dedicated directory
+      - /mnt/m2/docker/cloud_backup/data/restic-cache:/root/.cache/restic
+      - /mnt/m2/docker/cloud_backup/data/rclone-config:/root/.config/rclone
+      - /mnt/m2/docker/cloud_backup/scripts:/scripts:ro
+      # Log directory in dedicated path
+      - /mnt/m2/docker/cloud_backup/logs:/var/log/backup
     networks:
       - backup-net
     healthcheck:
@@ -40,9 +40,9 @@ services:
     environment:
       - TZ=${TZ:-America/Sao_Paulo}
     volumes:
-      - ./crontab:/etc/crontabs/root:ro
-      - ./scripts:/scripts:ro
-      - backup-logs:/var/log/backup
+      - /mnt/m2/docker/cloud_backup/crontab:/etc/crontabs/root:ro
+      - /mnt/m2/docker/cloud_backup/scripts:/scripts:ro
+      - /mnt/m2/docker/cloud_backup/logs:/var/log/backup
     networks:
       - backup-net
     depends_on:
@@ -59,21 +59,15 @@ services:
     environment:
       - TZ=${TZ:-America/Sao_Paulo}
     volumes:
-      - ./scripts:/scripts:ro
-      - backup-logs:/var/log/backup:ro
+      - /mnt/m2/docker/cloud_backup/scripts:/scripts:ro
+      - /mnt/m2/docker/cloud_backup/logs:/var/log/backup:ro
     networks:
       - backup-net
     profiles:
       - notifications
     command: ["tail", "-f", "/dev/null"]
 
-volumes:
-  restic-cache:
-    driver: local
-  restic-config:
-    driver: local
-  backup-logs:
-    driver: local
+# All data now stored in host directory structure
 
 networks:
   backup-net:
