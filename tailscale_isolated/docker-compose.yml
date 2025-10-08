@@ -1,0 +1,55 @@
+version: "3.9"
+
+networks:
+  tailscale_isolated:
+    driver: bridge    # rede dedicada ao container (não compartilha com outros)
+
+services:
+  tailscale-exit:
+    image: tailscale/tailscale:stable
+    container_name: tailscale-exit
+    hostname: ts-exit
+    networks: [tailscale_isolated]
+    restart: unless-stopped
+
+    # MÁXIMA ISOLAÇÃO (sem rootfs gravável e sem privilégios extras)
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    # Só cria tmpfs em diretórios voláteis
+    tmpfs:
+      - /tmp
+      - /run
+      - /var/run
+
+    # Estado do Tailscale (único volume persistente)
+    volumes:
+      - ./state:/var/lib/tailscale
+
+    # Limites e proteções extras
+    pids_limit: 128
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+
+    # Necessário para Exit Node (forwarding)
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.forwarding: "1"
+
+    # O entrypoint oficial do container usa essas variáveis para dar o "tailscale up"
+    environment:
+      # Gere uma Auth Key (de preferência "ephemeral" e com tag) no admin do Tailscale
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      # Argumentos do "tailscale up"
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS}
