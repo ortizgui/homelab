@@ -1,10 +1,14 @@
 services:
-  tailscale:
+  tailscale-exit:
     image: tailscale/tailscale:stable
     container_name: tailscale-exit
     hostname: ts-exit
-    network_mode: host
-    privileged: true
+    networks:
+      - exit_isolated
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    # Remova privileged: true - não é necessário!
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
@@ -13,5 +17,23 @@ services:
       - TS_TUN_MODE=tun
       - TS_STATE_DIR=/var/lib/tailscale
     volumes:
-      - /mnt/m2/docker/tailscale-isolated/state:/var/lib/tailscale
+      - /mnt/m2/docker/tailscale-isolated/state:/var/lib/tailscale:rw
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+
+networks:
+  exit_isolated:
+    driver: bridge
+    internal: false  # Precisa acessar a internet
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
