@@ -1,0 +1,14 @@
+services:
+  localsend:
+    build:
+      context: .
+      args:
+        LS_VERSION: "1.17.0"
+    container_name: localsend
+    restart: unless-stopped
+
+    network_mode: host
+
+    volumes:
+      - ./data/config:/data/config
+      - ./data/downloads:/data/downloads
