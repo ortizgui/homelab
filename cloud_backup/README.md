@@ -1,633 +1,155 @@
-# Encrypted Cloud Backup with Restic + rclone
+# Cloud Backup
 
-A secure, automated backup solution using **Restic** with **rclone** backend, running in Docker containers on ARM64/Linux systems (Orange Pi compatible).
+Encrypted backup stack built on top of `restic + rclone`, running in containers with a local API, scheduler and web UI.
 
-## Features
+## What changed
 
-- ✅ **Client-side AES-256 encryption** (zero-knowledge)
-- ✅ **Incremental & deduplicated** backups
-- ✅ **Automated scheduling** (weekly + monthly)
-- ✅ **Retention policy** (keep 1 weekly, 1 monthly)
-- ✅ **Multiple cloud providers** (Google Drive, OneDrive, S3, etc.)
-- ✅ **ARM64 compatible** (Orange Pi, Raspberry Pi)
-- ✅ **Health monitoring** with Docker healthchecks
-- ✅ **Comprehensive logging** and error handling
-- ✅ **Easy restore** functionality
+- `restic` remains the backup engine and `rclone` remains the cloud transport.
+- The stack is now split into four services:
+  - `backup-engine`: executes preflight, backup, forget, prune and restore.
+  - `backup-api`: persists configuration and exposes a local HTTP API.
+  - `backup-scheduler`: reads the saved schedule and triggers jobs.
+  - `backup-web`: serves the UI and proxies `/api`.
+- Backup and retention are now separate operations.
+- Safety gates block any cloud mutation when mounts, source paths, storage health, remote access or repository access are not safe.
 
-## Quick Start
+## Safety model
 
-### 1. Initial Setup
+Before `backup`, `forget` or `prune`, the engine validates:
+
+- expected mountpoints exist and are directories
+- enabled source paths exist and are readable inside the container
+- sources are not unexpectedly empty unless explicitly allowed
+- remote connectivity through `rclone`
+- repository access through `restic`
+- storage health via:
+  - optional blocker file
+  - optional JSON status file produced by another tool
+  - `/proc/mdstat` degraded RAID detection when mounted
+
+If any critical validation fails, the operation aborts, gets logged and is eligible for notification.
+
+## Layout
+
+Persistent data is configurable through `CLOUD_BACKUP_DATA_DIR`.
+
+Default:
+
+- `CLOUD_BACKUP_DATA_DIR=./data`
+
+Recommended for your server layout:
+
+- Git repo: `/mnt/m2/docker/git/homelab/cloud_backup`
+- Persistent service data: `/mnt/m2/docker/cloud_backup`
+
+Example `.env`:
+
+```env
+CLOUD_BACKUP_DATA_DIR=/mnt/m2/docker/cloud_backup
+```
+
+Inside that host directory, the service expects:
+
+- `config/config.json`: persisted application config
+- `rclone/rclone.conf`: rclone config
+- `logs/`: JSONL operation logs
+- `restic-cache/`: restic cache
+- `state/`: scheduler and runtime state
+- `restore/`: restore target root
+
+## Quick start
 
 ```bash
-# Clone or download this repository
-git clone <repository-url>
-cd cloud_backup
-
-# Run the automated setup script
-sudo ./setup.sh
-
-# The script will create the directory structure in:
-# /mnt/m2/docker/cloud_backup/
+cd /Volumes/homeX/git/homelab/cloud_backup
+./setup.sh
+docker compose up -d --build
 ```
 
-### 2. Configure rclone (Cloud Provider)
+If you want persistence outside the Git checkout, edit `.env` first and set:
+
+```env
+CLOUD_BACKUP_DATA_DIR=/mnt/m2/docker/cloud_backup
+```
+
+Open [http://localhost:8095](http://localhost:8095) unless you changed `CLOUD_BACKUP_WEB_PORT`.
+
+The API is exposed on [http://localhost:8096](http://localhost:8096) by default.
+
+## Default retention
+
+The initial saved configuration starts with:
+
+- `keep-last = 7`
+- `keep-daily = 14`
+- `keep-weekly = 8`
+- `keep-monthly = 3`
+- `--skip-if-unchanged` on backup
+- default exclusions for temporary/cache files, while `.iso` files remain included
+
+`BANDWIDTH_LIMIT` accepts values like `4M`, `512K`, or `0`. The app converts that to the `restic --limit-upload` format automatically.
+
+`forget` and `prune` are scheduled independently from the normal backup job.
+
+## Main API endpoints
+
+- `GET /api/config`: load saved configuration
+- `PUT /api/config`: save configuration
+- `POST /api/config/validate`: validate a candidate config
+- `GET /api/preflight`: run the safety gate without changing cloud state
+- `POST /api/actions/backup`: trigger a manual backup
+- `POST /api/actions/forget`: trigger retention cleanup without prune
+- `POST /api/actions/prune`: trigger prune
+- `GET /api/snapshots`: list snapshots
+- `POST /api/actions/restore`: restore a snapshot into `/data/restore/...`
+- `GET /api/config/export`: export config bundle
+- `POST /api/config/import`: import config bundle with schema validation
+
+## UI coverage
+
+The web UI provides:
+
+- status and safety gate visibility
+- cloud/repository configuration
+- monitored source selection
+- exclusions
+- retention settings
+- schedule editing
+- operation history
+- restore trigger
+- config export/import
+
+## Local commands
 
 ```bash
-# Use the helper script to configure rclone
-/mnt/m2/docker/cloud_backup/configure-rclone.sh
-
-# Example for Google Drive:
-# - Choose "drive" for Google Drive
-# - Follow the OAuth flow
-# - Name your remote (e.g., "gdrive")
-
-# Test the connection
-RCLONE_CONFIG="/mnt/m2/docker/cloud_backup/data/rclone-config/rclone.conf" rclone lsd gdrive:
+docker compose exec backup-engine python3 -m app.operation_cli preflight
+docker compose exec backup-engine python3 -m app.operation_cli backup manual
+docker compose exec backup-engine python3 -m app.operation_cli forget
+docker compose exec backup-engine python3 -m app.operation_cli prune
+docker compose exec backup-engine python3 -m app.operation_cli restore <snapshot> /data/restore/test
 ```
 
-### 3. Configure the System
+Legacy shell wrappers still exist in [`cloud_backup/scripts`](/Volumes/homeX/git/homelab/cloud_backup/scripts), but they now delegate to the Python CLI.
+
+## disk-health integration
+
+The stack mounts [`disk-health`](/Volumes/homeX/git/homelab/disk-health) read-only for reuse and supports two simple integration points:
+
+- `CLOUD_BACKUP_DISK_HEALTH_FILE`: JSON status file, for example `{ "status": "ok" }`
+- `CLOUD_BACKUP_DISK_HEALTH_BLOCKER_FILE`: if this file exists, cloud-mutating jobs are blocked
+
+This keeps `cloud_backup` conservative even if the disk-health project evolves independently.
+
+## Validation
+
+Useful verification commands:
 
 ```bash
-# Edit the configuration file
-nano /mnt/m2/docker/cloud_backup/.env
-
-# Key settings to configure:
-# - RESTIC_PASSWORD (strong encryption password)
-# - RESTIC_REPOSITORY (e.g., rclone:gdrive:/backups/restic)
-# - BACKUP_PATHS (e.g., /mnt/raid1:/mnt/m2)
-# - TELEGRAM_BOT_TOKEN (for notifications)
-# - TELEGRAM_CHAT_ID (for notifications)
+python3 -m unittest discover -s /Volumes/homeX/git/homelab/cloud_backup/tests
+python3 -m compileall /Volumes/homeX/git/homelab/cloud_backup/app /Volumes/homeX/git/homelab/cloud_backup/tests
+docker compose config
 ```
 
-### 4. Start the System
+Notes:
 
-```bash
-# Navigate to the configuration directory
-cd /mnt/m2/docker/cloud_backup
-
-# Build and start the containers
-docker compose up -d
-
-# Check container status
-docker compose ps
-docker compose logs
-```
-
-### 5. Test Manual Backup
-
-```bash
-# Run a test weekly backup
-docker exec backup-restic /scripts/backup.sh weekly --dry-run
-
-# Run actual backup
-docker exec backup-restic /scripts/backup.sh weekly
-
-# Check backup status
-docker exec backup-restic restic snapshots
-```
-
-## Directory Structure
-
-All configuration, data, and logs are stored in `/mnt/m2/docker/cloud_backup/`:
-
-```
-/mnt/m2/docker/cloud_backup/
-├── .env                          # Main configuration
-├── docker-compose.yml            # Container setup
-├── scripts/                      # Backup scripts
-├── data/                         # Persistent data
-│   ├── restic-cache/             # Restic cache
-│   └── rclone-config/            # rclone configs
-└── logs/                         # Operation logs
-```
-
-**Benefits:**
-- ✅ Centralized configuration and data
-- ✅ Survives container rebuilds
-- ✅ Easy to backup/restore system config
-- ✅ Clear separation of data types
-
-See [DIRECTORY_STRUCTURE.md](DIRECTORY_STRUCTURE.md) for complete details.
-
-## Configuration
-
-### Environment Variables (.env)
-
-**Required:**
-- `RESTIC_PASSWORD`: Strong encryption password (never lose this!)
-- `RESTIC_REPOSITORY`: Repository path (e.g., `rclone:gdrive:/backups/restic`)
-- `BACKUP_PATHS`: Colon-separated paths to backup (e.g., `/mnt/raid1:/mnt/m2`)
-
-**Telegram Notifications (Recommended):**
-- `TELEGRAM_BOT_TOKEN`: Bot token from @BotFather
-- `TELEGRAM_CHAT_ID`: Your chat ID or group/channel ID
-
-**Optional:**
-- `NOTIFY_ON_SUCCESS`: Send success notifications (default: true)
-- `NOTIFY_ON_FAILURE`: Send failure notifications (default: true)
-- `BANDWIDTH_LIMIT`: Upload speed limit (e.g., `--limit-upload 4M`)
-- `RESTIC_EXCLUDES`: Files/patterns to exclude
-- `TZ`: Timezone (default: `America/Sao_Paulo`)
-- `MAX_BACKUP_AGE_HOURS`: Health check threshold (default: 192 hours)
-
-### rclone Headless Configuration
-
-For automated setups, you can configure rclone via environment variables:
-
-#### Google Drive
-```bash
-# In .env file:
-RCLONE_CONFIG_GDRIVE_TYPE=drive
-RCLONE_CONFIG_GDRIVE_CLIENT_ID=your-client-id
-RCLONE_CONFIG_GDRIVE_CLIENT_SECRET=your-client-secret
-RCLONE_CONFIG_GDRIVE_TOKEN={"access_token":"...","refresh_token":"..."}
-```
-
-#### OneDrive
-```bash
-# In .env file:
-RCLONE_CONFIG_ONEDRIVE_TYPE=onedrive
-RCLONE_CONFIG_ONEDRIVE_TOKEN={"access_token":"...","refresh_token":"..."}
-RCLONE_CONFIG_ONEDRIVE_DRIVE_TYPE=personal
-```
-
-## Backup Schedule
-
-The system runs automated backups according to this schedule:
-
-- **Weekly Backup**: Every Sunday at 3:00 AM
-- **Monthly Backup**: Last day of each month at 3:30 AM
-- **Integrity Check**: 15th of each month at 4:00 AM
-
-### Retention Policy
-
-- **Weekly**: Keep 1 most recent weekly backup
-- **Monthly**: Keep 1 most recent monthly backup
-- Automatic pruning after each backup
-
-## Usage
-
-### Manual Backup Operations
-
-```bash
-# Navigate to config directory
-cd /mnt/m2/docker/cloud_backup
-
-# Weekly backup
-docker exec backup-restic /scripts/backup.sh weekly
-
-# Monthly backup (only on last day of month)
-docker exec backup-restic /scripts/backup.sh monthly
-
-# Dry run (test without changes)
-docker exec backup-restic /scripts/backup.sh weekly --dry-run
-
-# Check repository status
-docker exec backup-restic restic snapshots
-docker exec backup-restic restic stats
-```
-
-### Health Monitoring
-
-```bash
-# Navigate to config directory
-cd /mnt/m2/docker/cloud_backup
-
-# Check system health
-docker exec backup-restic /scripts/healthcheck.sh
-
-# Check container health status
-docker compose ps
-
-# View logs
-docker compose logs backup-restic
-docker compose logs scheduler
-
-# View log files directly
-tail -f /mnt/m2/docker/cloud_backup/logs/backup-*.log
-```
-
-### Preflight Checks
-
-```bash
-# Run system diagnostics
-docker exec backup-restic /scripts/preflight.sh
-```
-
-## Restore Operations
-
-The restore script provides multiple ways to recover your data:
-
-### List Available Snapshots
-
-```bash
-docker exec backup-restic /scripts/restore.sh list-snapshots
-```
-
-### Restore Entire Snapshot
-
-```bash
-# Restore complete snapshot to /tmp/restore
-docker exec backup-restic /scripts/restore.sh restore-snapshot a1b2c3d4 /tmp/restore
-```
-
-### Restore Specific Path
-
-```bash
-# Restore specific directory from snapshot
-docker exec backup-restic /scripts/restore.sh restore-path a1b2c3d4 "/home/user/documents" /tmp/restore-docs
-```
-
-### Interactive Restore
-
-```bash
-# Interactive mode with prompts
-docker exec -it backup-restic /scripts/restore.sh interactive
-```
-
-### Search for Files
-
-```bash
-# Find files across all snapshots
-docker exec backup-restic /scripts/restore.sh search-file "config.json"
-
-# List files in specific snapshot
-docker exec backup-restic /scripts/restore.sh list-files a1b2c3d4
-```
-
-### Example Restore Session
-
-```bash
-# 1. List snapshots to find the one you need
-docker exec backup-restic /scripts/restore.sh list-snapshots
-
-# Output:
-# ID        Time                 Host    Tags        Paths
-# a1b2c3d4  2024-01-15 03:00:00  server  weekly      /mnt/raid1, /mnt/m2
-# e5f6g7h8  2024-01-08 03:00:00  server  weekly      /mnt/raid1, /mnt/m2
-
-# 2. Restore specific file from latest snapshot
-docker exec backup-restic /scripts/restore.sh restore-path a1b2c3d4 "/mnt/raid1/important/config.json" /tmp/restore
-
-# 3. Verify restored file
-ls -la /tmp/restore/mnt/raid1/important/config.json
-```
-
-## Telegram Bot Setup
-
-### 1. Create Telegram Bot
-
-1. **Start chat with BotFather**:
-   - Open Telegram and search for `@BotFather`
-   - Send `/start` to begin
-
-2. **Create new bot**:
-   ```
-   /newbot
-   ```
-   - Choose a name for your bot (e.g., "My Backup Bot")
-   - Choose a username ending in "bot" (e.g., "mybackup_bot")
-   - Save the **bot token** (format: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
-
-### 2. Get Chat ID
-
-1. **Start chat with your bot**:
-   - Search for your bot username in Telegram
-   - Send `/start` to your bot
-
-2. **Get your chat ID**:
-   ```bash
-   # Replace YOUR_BOT_TOKEN with actual token
-   curl https://api.telegram.org/botYOUR_BOT_TOKEN/getUpdates
-   ```
-   - Look for `"chat":{"id":123456789` in the response
-   - Save this number as your `TELEGRAM_CHAT_ID`
-
-### 3. Test Notifications
-
-```bash
-# Test notification after configuring .env
-docker exec backup-restic /scripts/notify.sh success "Test message from backup system"
-```
-
-### 4. Notification Examples
-
-**Success Notification:**
-```
-✅ Backup SUCESSO
-
-🖥️ Host: `orange-pi`
-⏰ Horário: `22/09/2024 03:00:15`
-📂 Repositório: `rclone:gdrive:/backups/restic`
-
-📝 Detalhes:
-Backup weekly realizado com sucesso!
-
-📊 Estatísticas:
-• Tag: weekly
-• Repositório: rclone:gdrive:/backups/restic
-• Paths: /mnt/raid1:/mnt/m2
-```
-
-**Failure Notification:**
-```
-❌ Backup ERRO
-
-🖥️ Host: `orange-pi`
-⏰ Horário: `22/09/2024 03:15:30`
-📂 Repositório: `rclone:gdrive:/backups/restic`
-
-📝 Detalhes:
-❌ Backup FALHOU!
-
-🚨 Detalhes do erro:
-• Exit code: 1
-• Tag: weekly
-• Repositório: rclone:gdrive:/backups/restic
-• Paths: /mnt/raid1:/mnt/m2
-
-⚠️ Verifique os logs para mais detalhes.
-
-📄 Últimas linhas do log:
-```
-[ERROR] Cannot connect to repository
-[ERROR] Network timeout after 30 seconds
-```
-```
-
-### 5. Group/Channel Notifications (Optional)
-
-**For Groups:**
-1. Add your bot to the group
-2. Make bot an admin (if needed)
-3. Get group ID from `/getUpdates` (negative number)
-
-**For Channels:**
-1. Add bot to channel as admin
-2. Use channel username `@yourchannel` or numeric ID
-
-## Cloud Provider Setup
-
-### Google Drive
-
-1. **Create Google Cloud Project**:
-   - Go to [Google Cloud Console](https://console.cloud.google.com/)
-   - Create new project or select existing
-   - Enable Google Drive API
-
-2. **Create OAuth Credentials**:
-   - Go to APIs & Services > Credentials
-   - Create OAuth 2.0 Client ID
-   - Application type: Desktop application
-   - Note the Client ID and Client Secret
-
-3. **Configure rclone**:
-   ```bash
-   rclone config
-   # Choose: New remote → drive → Enter credentials → Follow OAuth flow
-   ```
-
-### OneDrive
-
-1. **Microsoft App Registration**:
-   - Go to [Azure Portal](https://portal.azure.com/)
-   - Azure Active Directory > App registrations > New registration
-   - Note Application (client) ID
-
-2. **Configure rclone**:
-   ```bash
-   rclone config
-   # Choose: New remote → onedrive → Follow OAuth flow
-   ```
-
-### Amazon S3
-
-```bash
-rclone config
-# Choose: s3 → AWS → Enter access key and secret → Choose region
-```
-
-## Troubleshooting
-
-### Common Issues
-
-**1. "Cannot access repository"**
-```bash
-# Check rclone connectivity
-docker exec backup-restic rclone lsd gdrive:
-
-# Check restic repository
-docker exec backup-restic restic snapshots
-```
-
-**2. "Permission denied on backup paths"**
-```bash
-# Check mounted volumes in docker-compose.yml
-# Ensure paths exist and are readable
-ls -la /mnt/raid1
-```
-
-**3. "Backup takes too long"**
-```bash
-# Add bandwidth limit
-BANDWIDTH_LIMIT=--limit-upload 2M
-
-# Check system resources
-docker exec backup-restic /scripts/preflight.sh
-```
-
-**4. "Rate limited by cloud provider"**
-```bash
-# Add delays between operations
-# Check provider-specific rate limits
-# Consider using multiple remotes
-```
-
-### Log Analysis
-
-```bash
-# View recent backup logs
-find /mnt/m2/docker/cloud_backup/logs -name "backup-*.log" -mtime -1
-
-# View specific log
-tail -f /mnt/m2/docker/cloud_backup/logs/backup-20240115-030000.log
-
-# Check for errors
-grep -r "ERROR" /mnt/m2/docker/cloud_backup/logs/
-
-# View logs from container
-docker exec backup-restic find /var/log/backup -name "backup-*.log" -mtime -1
-```
-
-### Performance Optimization
-
-**For ARM64/Orange Pi systems:**
-
-1. **Limit concurrent operations**:
-   ```bash
-   # In .env:
-   BANDWIDTH_LIMIT=--limit-upload 2M
-   ```
-
-2. **Exclude unnecessary files**:
-   ```bash
-   RESTIC_EXCLUDES="*.tmp *.cache /proc /sys /tmp node_modules .git"
-   ```
-
-3. **Monitor system resources**:
-   ```bash
-   # Check during backup
-   htop
-   iotop -a
-   ```
-
-## Security Considerations
-
-### Encryption
-- **Client-side encryption**: Data encrypted before leaving your system
-- **Password security**: Use strong, unique passwords (consider `openssl rand -base64 32`)
-- **Zero-knowledge**: Cloud provider cannot decrypt your data
-
-### Access Control
-```bash
-# Secure .env file
-chmod 600 .env
-
-# Run containers as non-root
-# (Already configured in Dockerfile)
-
-# Regular key rotation
-# Note: Changing password requires new repository
-```
-
-### Backup Verification
-```bash
-# Regular integrity checks
-docker exec backup-restic restic check
-
-# Test restore procedures monthly
-docker exec backup-restic /scripts/restore.sh list-snapshots
-
-# Verify critical files
-docker exec backup-restic /scripts/restore.sh search-file "important-config.json"
-```
-
-## Maintenance
-
-### Password Rotation
-
-⚠️ **Warning**: Changing the restic password requires creating a new repository and re-uploading all data.
-
-```bash
-# 1. Create new repository with new password
-RESTIC_PASSWORD=new-password restic init
-
-# 2. Backup current data to new repository
-# 3. Update .env with new password
-# 4. Delete old repository (optional)
-```
-
-### Upgrading
-
-```bash
-# Navigate to config directory
-cd /mnt/m2/docker/cloud_backup
-
-# Update container images
-docker compose pull
-docker compose up -d
-
-# Check for script updates (if using git)
-git pull origin main
-./setup.sh --force  # Re-run setup to update scripts
-docker compose restart
-```
-
-### Monitoring
-
-```bash
-# Navigate to config directory
-cd /mnt/m2/docker/cloud_backup
-
-# Health check status
-docker compose ps
-
-# Backup history
-docker exec backup-restic restic snapshots
-
-# Repository statistics
-docker exec backup-restic restic stats
-
-# Recent errors (from host)
-grep -r "ERROR" /mnt/m2/docker/cloud_backup/logs/ | tail -10
-
-# Recent errors (from container)
-docker exec backup-restic grep -r "ERROR" /var/log/backup/ | tail -10
-
-# Check disk usage
-du -sh /mnt/m2/docker/cloud_backup/*
-```
-
-## Architecture
-
-### Components
-
-- **backup-restic**: Main backup container with restic and rclone
-- **scheduler**: Cron-based task scheduler
-- **notify**: Optional notification service
-
-### Data Flow
-
-1. **Scheduler** triggers backup script at configured times
-2. **Preflight checks** validate system state and connectivity
-3. **Backup process** reads source paths (read-only) and uploads to cloud
-4. **Retention policy** applied automatically after each backup
-5. **Health checks** monitor backup freshness and repository integrity
-
-### File Structure
-
-```
-/mnt/m2/docker/cloud_backup/    # Main configuration directory
-├── docker-compose.yml          # Container orchestration
-├── Dockerfile                  # Custom restic+rclone image
-├── .env                        # Main configuration file
-├── .env.example               # Configuration template
-├── crontab                    # Backup schedule
-├── setup.sh                   # Automated setup script
-├── configure-rclone.sh        # rclone configuration helper
-├── scripts/                   # Executable scripts
-│   ├── backup.sh              # Main backup logic
-│   ├── preflight.sh           # System checks
-│   ├── healthcheck.sh         # Health monitoring
-│   ├── restore.sh             # Restore operations
-│   └── notify.sh              # Telegram notifications
-├── data/                      # Persistent application data
-│   ├── restic-cache/          # Restic performance cache
-│   └── rclone-config/         # rclone remote configurations
-├── logs/                      # Operation logs and status
-│   ├── backup-*.log           # Backup operation logs
-│   ├── restore-*.log          # Restore operation logs
-│   ├── cron.log              # Scheduled task logs
-│   ├── last_backup_timestamp  # Health check timestamp
-│   └── last_check_timestamp   # Integrity check timestamp
-├── config/                    # Additional configurations
-└── README.md                  # Complete documentation
-
-Original development directory:
-cloud_backup/                  # Development/source directory
-├── All source files...
-└── config -> /mnt/m2/docker/cloud_backup/  # Symlink to config
-```
-
-## Support
-
-For issues, questions, or improvements:
-
-1. Check the troubleshooting section
-2. Review logs for error details
-3. Test with `--dry-run` mode first
-4. Verify cloud provider connectivity
-
-## License
-
-This project is open source. Use at your own risk and ensure you test restore procedures regularly.
+- Runtime services now use the Python package installed into the image, instead of relying on bind-mounted source code.
+- Exported config bundles include `restic_password` and inline `rclone_config` so they can be used as full restore backups. Handle these exports as sensitive secrets.

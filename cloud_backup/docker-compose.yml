@@ -1,73 +1,98 @@
-version: "3.8"
-
 services:
-  backup-restic:
+  backup-engine:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: backup-restic
+    container_name: cloud-backup-engine
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      - TZ=${TZ:-America/Sao_Paulo}
+      TZ: ${TZ:-America/Sao_Paulo}
+      CLOUD_BACKUP_CONFIG_FILE: /data/config/config.json
+      CLOUD_BACKUP_STATE_DIR: /data/state
+      CLOUD_BACKUP_LOG_DIR: /data/logs
+      CLOUD_BACKUP_RCLONE_CONFIG: /data/rclone/rclone.conf
+      CLOUD_BACKUP_MDSTAT_FILE: /host/proc/mdstat
+      CLOUD_BACKUP_DISK_HEALTH_FILE: /health/disk-health.json
+      CLOUD_BACKUP_HOSTNAME: ${CLOUD_BACKUP_HOSTNAME:-homelab}
     volumes:
-      # Read-only mounts for backup sources
-      - /mnt/raid1:/backup-sources/raid1:ro
-      - /mnt/m2:/backup-sources/m2:ro
-      # Persistent storage for restic cache and rclone config in dedicated directory
-      - /mnt/m2/docker/cloud_backup/data/restic-cache:/root/.cache/restic
-      - /mnt/m2/docker/cloud_backup/data/rclone-config:/root/.config/rclone
-      - /mnt/m2/docker/cloud_backup/scripts:/scripts:ro
-      # Log directory in dedicated path
-      - /mnt/m2/docker/cloud_backup/logs:/var/log/backup
+      - ${CLOUD_BACKUP_DATA_DIR:-./data}:/data
+      - ./scripts:/scripts:ro
+      - ../disk-health:/opt/disk-health:ro
+      - ${PRIMARY_SOURCE_PATH:-/mnt/raid1}:/source/raid1:ro
+      - ${SECONDARY_SOURCE_PATH:-/mnt/m2}:/source/m2:ro
+      - /proc/mdstat:/host/proc/mdstat:ro
     networks:
       - backup-net
+    command: ["python3", "-m", "app.engine_server"]
     healthcheck:
-      test: ["/scripts/healthcheck.sh"]
-      interval: 6h
-      timeout: 30s
+      test: ["CMD", "python3", "-m", "app.operation_cli", "healthcheck"]
+      interval: 2m
+      timeout: 20s
       retries: 3
-      start_period: 10s
-    command: ["tail", "-f", "/dev/null"]  # Keep container running
+      start_period: 20s
 
-  scheduler:
-    image: alpine:3.19
-    container_name: backup-scheduler
+  backup-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloud-backup-api
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      - TZ=${TZ:-America/Sao_Paulo}
+      TZ: ${TZ:-America/Sao_Paulo}
+      CLOUD_BACKUP_CONFIG_FILE: /data/config/config.json
+      CLOUD_BACKUP_STATE_DIR: /data/state
+      CLOUD_BACKUP_LOG_DIR: /data/logs
+      CLOUD_BACKUP_RCLONE_CONFIG: /data/rclone/rclone.conf
+      CLOUD_BACKUP_ENGINE_URL: http://backup-engine:8091
     volumes:
-      - /mnt/m2/docker/cloud_backup/crontab:/etc/crontabs/root:ro
-      - /mnt/m2/docker/cloud_backup/scripts:/scripts:ro
-      - /mnt/m2/docker/cloud_backup/logs:/var/log/backup
+      - ${CLOUD_BACKUP_DATA_DIR:-./data}:/data
+    depends_on:
+      - backup-engine
     networks:
       - backup-net
-    depends_on:
-      - backup-restic
-    command: ["crond", "-f", "-l", "2"]
+    ports:
+      - "${CLOUD_BACKUP_API_PORT:-8096}:8080"
+    command: ["python3", "-m", "app.api_server"]
 
-  # Optional notification service
-  notify:
-    image: curlimages/curl:8.5.0
-    container_name: backup-notify
-    restart: "no"
+  backup-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloud-backup-scheduler
+    restart: unless-stopped
     env_file:
       - .env
     environment:
-      - TZ=${TZ:-America/Sao_Paulo}
+      TZ: ${TZ:-America/Sao_Paulo}
+      CLOUD_BACKUP_CONFIG_FILE: /data/config/config.json
+      CLOUD_BACKUP_STATE_DIR: /data/state
+      CLOUD_BACKUP_ENGINE_URL: http://backup-engine:8091
+      CLOUD_BACKUP_API_URL: http://backup-api:8080
     volumes:
-      - /mnt/m2/docker/cloud_backup/scripts:/scripts:ro
-      - /mnt/m2/docker/cloud_backup/logs:/var/log/backup:ro
+      - ${CLOUD_BACKUP_DATA_DIR:-./data}:/data
+    depends_on:
+      - backup-engine
+      - backup-api
     networks:
       - backup-net
-    profiles:
-      - notifications
-    command: ["tail", "-f", "/dev/null"]
+    command: ["python3", "-m", "app.scheduler"]
 
-# All data now stored in host directory structure
+  backup-web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    container_name: cloud-backup-web
+    restart: unless-stopped
+    depends_on:
+      - backup-api
+    networks:
+      - backup-net
+    ports:
+      - "${CLOUD_BACKUP_WEB_PORT:-8095}:80"
 
 networks:
   backup-net:

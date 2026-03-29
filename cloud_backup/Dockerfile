@@ -1,63 +1,56 @@
-FROM alpine:3.19
+FROM alpine:3.21
 
-# Install dependencies
+ARG RESTIC_VERSION=0.17.3
+ARG RCLONE_VERSION=1.69.2
+
 RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    curl \
     bash \
+    ca-certificates \
     coreutils \
-    findutils \
-    util-linux \
+    curl \
     jq \
-    && rm -rf /var/cache/apk/*
+    python3 \
+    py3-pip \
+    py3-setuptools \
+    tzdata \
+    util-linux \
+    findutils \
+    grep \
+    sed \
+    tar \
+    unzip
 
-# Install restic
-ARG RESTIC_VERSION=0.16.4
 RUN case "$(uname -m)" in \
-        x86_64) ARCH=amd64 ;; \
-        aarch64) ARCH=arm64 ;; \
-        armv7l) ARCH=arm ;; \
+        x86_64) RESTIC_ARCH=amd64 ; RCLONE_ARCH=amd64 ;; \
+        aarch64) RESTIC_ARCH=arm64 ; RCLONE_ARCH=arm64 ;; \
+        armv7l) RESTIC_ARCH=arm ; RCLONE_ARCH=arm-v7 ;; \
         *) echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
     esac \
-    && curl -L "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_${ARCH}.bz2" \
-        -o restic.bz2 \
-    && bunzip2 restic.bz2 \
-    && chmod +x restic \
-    && mv restic /usr/local/bin/ \
-    && restic version
+    && curl -fsSL "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_${RESTIC_ARCH}.bz2" -o /tmp/restic.bz2 \
+    && bunzip2 /tmp/restic.bz2 \
+    && install -m 0755 /tmp/restic /usr/local/bin/restic \
+    && curl -fsSL "https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${RCLONE_ARCH}.zip" -o /tmp/rclone.zip \
+    && unzip -q /tmp/rclone.zip -d /tmp \
+    && install -m 0755 /tmp/rclone-v${RCLONE_VERSION}-linux-${RCLONE_ARCH}/rclone /usr/local/bin/rclone \
+    && rm -rf /tmp/restic /tmp/rclone.zip /tmp/rclone-v${RCLONE_VERSION}-linux-${RCLONE_ARCH}
 
-# Install rclone
-ARG RCLONE_VERSION=1.65.2
-RUN case "$(uname -m)" in \
-        x86_64) ARCH=amd64 ;; \
-        aarch64) ARCH=arm64 ;; \
-        armv7l) ARCH=arm-v7 ;; \
-        *) echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
-    esac \
-    && curl -L "https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${ARCH}.zip" \
-        -o rclone.zip \
-    && unzip rclone.zip \
-    && mv rclone-*/rclone /usr/local/bin/ \
-    && rm -rf rclone* \
-    && rclone version
+RUN mkdir -p /workspace/app /scripts /data/config /data/logs /data/rclone /data/restic-cache /data/state /source /health /host/proc
 
-# Create directories
-RUN mkdir -p /scripts /var/log/backup /backup-sources
+ENV PYTHONUNBUFFERED=1
+ENV CLOUD_BACKUP_CONFIG_FILE=/data/config/config.json
+ENV CLOUD_BACKUP_STATE_DIR=/data/state
+ENV CLOUD_BACKUP_LOG_DIR=/data/logs
+ENV CLOUD_BACKUP_RCLONE_CONFIG=/data/rclone/rclone.conf
+ENV RESTIC_CACHE_DIR=/data/restic-cache
 
-# Set working directory
-WORKDIR /scripts
+WORKDIR /workspace
 
-# Copy scripts
+COPY app/ /workspace/app/
 COPY scripts/ /scripts/
-RUN chmod +x /scripts/*.sh
+COPY pyproject.toml /workspace/pyproject.toml
 
-# Create non-root user for security
-RUN adduser -D -s /bin/bash backup
-USER backup
+RUN python3 -m pip install --break-system-packages --no-cache-dir /workspace \
+    && python3 -c "import app.api_server; import app.engine_server; import app.scheduler" \
+    && chmod +x /scripts/*.sh
 
-# Health check
-HEALTHCHECK --interval=6h --timeout=30s --start-period=10s --retries=3 \
-    CMD ["/scripts/healthcheck.sh"]
-
-CMD ["tail", "-f", "/dev/null"]
+CMD ["python3", "-m", "app.engine_server"]

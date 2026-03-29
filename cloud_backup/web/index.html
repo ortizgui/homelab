@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Cloud Backup</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <h1>Cloud Backup</h1>
+        <p>Restic + rclone with safety gates.</p>
+        <nav>
+          <button data-view="status" class="active">Status</button>
+          <button data-view="config">Configuration</button>
+          <button data-view="sources">Sources</button>
+          <button data-view="retention">Retention</button>
+          <button data-view="schedule">Schedule</button>
+          <button data-view="logs">Logs</button>
+          <button data-view="restore">Restore</button>
+          <button data-view="transfer">Export / Import</button>
+        </nav>
+      </aside>
+      <section class="content">
+        <header class="toolbar">
+          <div>
+            <h2 id="view-title">Status</h2>
+            <p id="view-subtitle">Current repository state and safety gates.</p>
+          </div>
+          <div class="actions">
+            <button id="reload-status">Reload</button>
+            <button id="run-preflight">Run preflight</button>
+            <button id="run-backup" class="primary">Run backup</button>
+          </div>
+        </header>
+
+        <section id="run-indicator" class="run-indicator hidden"></section>
+        <section id="flash" class="flash hidden"></section>
+
+        <section data-panel="status" class="panel visible">
+          <div class="card-grid">
+            <article class="card">
+              <h3>Safety Gate</h3>
+              <div id="status-gate" class="metric">Unknown</div>
+              <pre id="status-failures"></pre>
+            </article>
+            <article class="card">
+              <h3>Snapshots</h3>
+              <div id="snapshot-count" class="metric">0</div>
+              <p id="last-backup">No successful backup yet.</p>
+            </article>
+            <article class="card">
+              <h3>Repository Usage</h3>
+              <div id="repo-usage" class="metric">N/A</div>
+              <p id="repo-files">Waiting for stats.</p>
+            </article>
+          </div>
+          <article class="card">
+            <h3>Blocked reasons</h3>
+            <ul id="preflight-list" class="plain-list"></ul>
+          </article>
+        </section>
+
+        <section data-panel="config" class="panel">
+          <article class="card form-card">
+            <h3>Cloud and repository</h3>
+            <label>Provider type <input id="provider-type"></label>
+            <label>Remote name <input id="remote-name"></label>
+            <label>Repository <input id="repository"></label>
+            <label>Restic password <input id="restic-password" type="password"></label>
+            <label>rclone.conf
+              <textarea id="rclone-config" rows="10"></textarea>
+            </label>
+            <div class="inline-actions">
+              <button id="save-config" class="primary">Save configuration</button>
+              <button id="validate-config">Validate</button>
+            </div>
+          </article>
+        </section>
+
+        <section data-panel="sources" class="panel">
+          <article class="card form-card">
+            <h3>Authorized roots</h3>
+            <textarea id="authorized-roots" rows="4"></textarea>
+            <h3>Monitored paths</h3>
+            <div id="source-list"></div>
+            <div class="inline-actions">
+              <button id="add-source">Add source</button>
+              <button id="browse-root">Browse first root</button>
+            </div>
+            <label>Exclusions
+              <textarea id="exclusions" rows="6"></textarea>
+            </label>
+          </article>
+        </section>
+
+        <section data-panel="retention" class="panel">
+          <article class="card form-card">
+            <h3>Retention policy</h3>
+            <label>Keep last <input id="keep-last" type="number"></label>
+            <label>Keep daily <input id="keep-daily" type="number"></label>
+            <label>Keep weekly <input id="keep-weekly" type="number"></label>
+            <label>Keep monthly <input id="keep-monthly" type="number"></label>
+          </article>
+        </section>
+
+        <section data-panel="schedule" class="panel">
+          <article class="card form-card">
+            <h3>Scheduler</h3>
+            <div id="schedule-form"></div>
+          </article>
+        </section>
+
+        <section data-panel="logs" class="panel">
+          <article class="card">
+            <h3>Operation history</h3>
+            <pre id="logs-output"></pre>
+          </article>
+        </section>
+
+        <section data-panel="restore" class="panel">
+          <article class="card form-card">
+            <h3>Restore snapshot</h3>
+            <label>Snapshot ID <input id="restore-snapshot-id"></label>
+            <label>Restore target <input id="restore-target" value="/data/restore/manual-restore"></label>
+            <label>Optional include path <input id="restore-include"></label>
+            <button id="run-restore">Restore</button>
+          </article>
+          <article class="card">
+            <h3>Available snapshots</h3>
+            <pre id="restore-snapshots"></pre>
+          </article>
+        </section>
+
+        <section data-panel="transfer" class="panel">
+          <article class="card form-card">
+            <h3>Export / Import</h3>
+            <button id="export-config">Export current configuration</button>
+            <label>Import bundle
+              <textarea id="import-bundle" rows="12"></textarea>
+            </label>
+            <button id="import-config">Import bundle</button>
+          </article>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

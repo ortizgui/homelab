@@ -1,2 +1,36 @@
-.env
 .DS_Store
+
+# Environment files and local secrets
+.env
+**/.env
+**/.env.*
+!**/.env.example
+!**/env.example
+
+# Common secret and certificate material
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+*.secret
+*.secrets
+
+# Python cache artifacts
+__pycache__/
+*.py[cod]
+
+# Runtime and generated data
+cloud_backup/data/*
+!cloud_backup/data/.gitkeep
+!cloud_backup/data/config/.gitkeep
+!cloud_backup/data/logs/.gitkeep
+!cloud_backup/data/rclone/.gitkeep
+!cloud_backup/data/restore/.gitkeep
+!cloud_backup/data/restic-cache/.gitkeep
+!cloud_backup/data/state/.gitkeep
+cloud_backup/diagnostics/*
