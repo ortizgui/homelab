@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .configuration import load_config, log_dir, rclone_config_path, state_dir
-from .runtime import _RUN_LOCK, append_log, begin_run, current_run, end_run, json_response, run_command, utc_now
+from .runtime import _RUN_LOCK, append_log, begin_run, current_run, end_run, interrupted_run, json_response, run_command, utc_now
 
 
 def build_restic_env(config: dict[str, Any]) -> dict[str, str]:
@@ -309,7 +309,43 @@ def build_backup_command(config: dict[str, Any], tag: str) -> list[str]:
     return command
 
 
+def run_post_failure_prune(config: dict[str, Any], trigger_action: str) -> dict[str, Any]:
+    command = ["restic", "prune", "--json"]
+    result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 6)
+    payload = json_response(
+        result.code == 0,
+        action="prune",
+        phase="post-failure",
+        trigger_action=trigger_action,
+        command=command,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
+    append_log("operations.jsonl", payload)
+    return payload
+
+
+def recover_interrupted_backup() -> dict[str, Any] | None:
+    interrupted = interrupted_run()
+    if interrupted is None:
+        return None
+
+    config = load_config()
+    payload = run_post_failure_prune(config, interrupted.get("action", "unknown"))
+    recovery_payload = json_response(
+        payload["ok"],
+        action="recovery",
+        phase="startup-prune",
+        interrupted_run=interrupted,
+        prune=payload,
+    )
+    append_log("operations.jsonl", recovery_payload)
+    end_run()
+    return recovery_payload
+
+
 def run_backup(tag: str = "manual") -> dict[str, Any]:
+    recover_interrupted_backup()
     config = load_config()
     gate = preflight(config)
     if not gate["ok"]:
@@ -346,6 +382,7 @@ def run_backup(tag: str = "manual") -> dict[str, Any]:
                 (state_dir() / "last_successful_backup.txt").write_text(utc_now(), encoding="utf-8")
                 notify(config, "success", "Backup concluido", f"Tag: {tag}")
             else:
+                run_post_failure_prune(config, "backup")
                 notify(config, "error", "Backup falhou", result.stderr[-800:])
             append_log("operations.jsonl", payload)
             return payload
@@ -354,6 +391,7 @@ def run_backup(tag: str = "manual") -> dict[str, Any]:
 
 
 def run_forget() -> dict[str, Any]:
+    recover_interrupted_backup()
     config = load_config()
     gate = preflight(config)
     if not gate["ok"]:
@@ -373,25 +411,40 @@ def run_forget() -> dict[str, Any]:
         str(retention["keep_monthly"]),
         "--json",
     ]
-    with _RUN_LOCK:
-        result = run_command(command, env=build_restic_env(config), timeout=60 * 30)
-    payload = json_response(result.code == 0, action="forget", command=command, stdout=result.stdout, stderr=result.stderr)
-    append_log("operations.jsonl", payload)
-    return payload
+    active_run = begin_run("forget")
+    if active_run is not None:
+        return json_response(False, message=f"{active_run['action']} already running", current_run=active_run)
+
+    try:
+        with _RUN_LOCK:
+            result = run_command(command, env=build_restic_env(config), timeout=60 * 30)
+        payload = json_response(result.code == 0, action="forget", command=command, stdout=result.stdout, stderr=result.stderr)
+        append_log("operations.jsonl", payload)
+        return payload
+    finally:
+        end_run()
 
 
 def run_prune() -> dict[str, Any]:
+    recover_interrupted_backup()
     config = load_config()
     gate = preflight(config)
     if not gate["ok"]:
         notify(config, "error", "Prune bloqueado", "\n".join(gate["failures"]))
         return gate
     command = ["restic", "prune", "--json"]
-    with _RUN_LOCK:
-        result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 6)
-    payload = json_response(result.code == 0, action="prune", command=command, stdout=result.stdout, stderr=result.stderr)
-    append_log("operations.jsonl", payload)
-    return payload
+    active_run = begin_run("prune")
+    if active_run is not None:
+        return json_response(False, message=f"{active_run['action']} already running", current_run=active_run)
+
+    try:
+        with _RUN_LOCK:
+            result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 6)
+        payload = json_response(result.code == 0, action="prune", command=command, stdout=result.stdout, stderr=result.stderr)
+        append_log("operations.jsonl", payload)
+        return payload
+    finally:
+        end_run()
 
 
 def list_snapshots() -> dict[str, Any]:
@@ -442,6 +495,7 @@ def list_logs(limit: int = 200) -> dict[str, Any]:
 
 
 def status() -> dict[str, Any]:
+    recover_interrupted_backup()
     config = load_config()
     snapshots = list_snapshots()
     stats = repository_stats()
@@ -478,5 +532,6 @@ def prune_old_logs() -> None:
 
 
 def healthcheck() -> dict[str, Any]:
+    recover_interrupted_backup()
     preflight_result = preflight(load_config())
     return json_response(preflight_result["ok"], details=preflight_result)

@@ -35,6 +35,10 @@ def json_response(ok: bool, **payload: Any) -> dict[str, Any]:
     return data
 
 
+def current_run_state_file() -> Path:
+    return log_dir().parent / "state" / "current-run.json"
+
+
 def run_command(command: list[str], env: dict[str, str] | None = None, timeout: int = 600) -> CommandResult:
     merged_env = os.environ.copy()
     if env:
@@ -69,6 +73,9 @@ def begin_run(action: str, **details: Any) -> dict[str, Any] | None:
         if _CURRENT_RUN is not None:
             return dict(_CURRENT_RUN)
         _CURRENT_RUN = {"action": action, "started_at": utc_now(), **details}
+        state_file = current_run_state_file()
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(_CURRENT_RUN, sort_keys=True) + "\n", encoding="utf-8")
         return None
 
 
@@ -76,11 +83,22 @@ def end_run() -> None:
     global _CURRENT_RUN
     with _RUN_STATE_LOCK:
         _CURRENT_RUN = None
+        current_run_state_file().unlink(missing_ok=True)
 
 
 def current_run() -> dict[str, Any] | None:
     with _RUN_STATE_LOCK:
         return dict(_CURRENT_RUN) if _CURRENT_RUN is not None else None
+
+
+def interrupted_run() -> dict[str, Any] | None:
+    with _RUN_STATE_LOCK:
+        if _CURRENT_RUN is not None:
+            return None
+        state_file = current_run_state_file()
+        if not state_file.exists():
+            return None
+        return json.loads(state_file.read_text(encoding="utf-8"))
 
 
 def list_json_logs(name: str, limit: int = 200) -> list[dict[str, Any]]:
