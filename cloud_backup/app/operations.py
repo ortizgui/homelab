@@ -10,7 +10,19 @@ from pathlib import Path
 from typing import Any
 
 from .configuration import load_config, log_dir, rclone_config_path, state_dir
-from .runtime import _RUN_LOCK, append_log, begin_run, current_run, end_run, interrupted_run, json_response, run_command, utc_now
+from .runtime import (
+    _RUN_LOCK,
+    append_log,
+    begin_run,
+    current_run,
+    end_run,
+    interrupted_run,
+    json_response,
+    run_command,
+    run_command_streaming,
+    update_run_progress,
+    utc_now,
+)
 
 
 def build_restic_env(config: dict[str, Any]) -> dict[str, str]:
@@ -309,6 +321,52 @@ def build_backup_command(config: dict[str, Any], tag: str) -> list[str]:
     return command
 
 
+def parse_restic_progress_line(line: str) -> dict[str, Any] | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+    message_type = payload.get("message_type")
+    if message_type == "status":
+        current_files = payload.get("current_files") or []
+        return {
+            "phase": "running",
+            "message_type": message_type,
+            "percent_done": payload.get("percent_done"),
+            "seconds_elapsed": payload.get("seconds_elapsed"),
+            "seconds_remaining": payload.get("seconds_remaining"),
+            "total_files": payload.get("total_files"),
+            "files_done": payload.get("files_done"),
+            "total_bytes": payload.get("total_bytes"),
+            "bytes_done": payload.get("bytes_done"),
+            "current_files": current_files,
+            "current_file": current_files[0] if current_files else None,
+        }
+    if message_type == "summary":
+        return {
+            "phase": "finalizing",
+            "message_type": message_type,
+            "files_new": payload.get("files_new"),
+            "files_changed": payload.get("files_changed"),
+            "files_unmodified": payload.get("files_unmodified"),
+            "dirs_new": payload.get("dirs_new"),
+            "dirs_changed": payload.get("dirs_changed"),
+            "dirs_unmodified": payload.get("dirs_unmodified"),
+            "data_blobs": payload.get("data_blobs"),
+            "tree_blobs": payload.get("tree_blobs"),
+            "data_added": payload.get("data_added"),
+            "total_files_processed": payload.get("total_files_processed"),
+            "total_bytes_processed": payload.get("total_bytes_processed"),
+            "total_duration": payload.get("total_duration"),
+            "snapshot_id": payload.get("snapshot_id"),
+        }
+    return None
+
+
 def run_post_failure_prune(config: dict[str, Any], trigger_action: str) -> dict[str, Any]:
     command = ["restic", "prune", "--json"]
     result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 6)
@@ -376,7 +434,29 @@ def run_backup(tag: str = "manual") -> dict[str, Any]:
                     command=command,
                 ),
             )
-            result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 12)
+            update_run_progress(
+                {
+                    "phase": "starting",
+                    "message_type": "status",
+                    "percent_done": 0,
+                    "files_done": 0,
+                    "bytes_done": 0,
+                    "current_file": None,
+                    "current_files": [],
+                }
+            )
+
+            def handle_backup_stdout(line: str) -> None:
+                progress = parse_restic_progress_line(line)
+                if progress is not None:
+                    update_run_progress(progress)
+
+            result = run_command_streaming(
+                command,
+                env=build_restic_env(config),
+                timeout=60 * 60 * 12,
+                on_stdout_line=handle_backup_stdout,
+            )
             payload = json_response(result.code == 0, action="backup", tag=tag, command=command, stdout=result.stdout, stderr=result.stderr)
             if result.code == 0:
                 (state_dir() / "last_successful_backup.txt").write_text(utc_now(), encoding="utf-8")

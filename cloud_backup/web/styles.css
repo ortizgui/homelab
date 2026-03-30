@@ -171,6 +171,29 @@ body {
   font-weight: 700;
 }
 
+.progress-track {
+  margin-top: 14px;
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7ddd0;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f766e 0%, #2aa198 100%);
+  transition: width 0.3s ease;
+}
+
+.muted-copy {
+  color: var(--muted);
+  margin-top: 10px;
+}
+
 .panel {
   display: none;
 }

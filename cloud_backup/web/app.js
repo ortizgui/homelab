@@ -81,6 +81,45 @@ function formatTimestamp(value) {
   return date.toLocaleString();
 }
 
+function formatPercent(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return null;
+  }
+  return `${Math.max(0, Math.min(100, value * 100)).toFixed(1)}%`;
+}
+
+function formatBytes(value) {
+  if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+    return null;
+  }
+  if (value === 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const scaled = value / (1024 ** exponent);
+  return `${scaled.toFixed(scaled >= 100 || exponent === 0 ? 0 : scaled >= 10 ? 1 : 2)} ${units[exponent]}`;
+}
+
+function formatDuration(seconds) {
+  if (typeof seconds !== "number" || Number.isNaN(seconds) || seconds < 0) {
+    return null;
+  }
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.round(seconds % 60);
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${secs}s`;
+  }
+  return `${secs}s`;
+}
+
 function hasActiveRun() {
   return Boolean(state.runtime?.current_run || state.status?.current_run);
 }
@@ -126,8 +165,48 @@ function renderRunIndicator() {
   const actionLabel = currentRun.action[0].toUpperCase() + currentRun.action.slice(1);
   const startedAt = formatTimestamp(currentRun.started_at);
   const tag = currentRun.tag ? ` Tag: ${currentRun.tag}.` : "";
-  node.textContent = `${actionLabel} running now.${tag} Started at ${startedAt}.`;
+  const percent = currentRun.action === "backup" ? formatPercent(currentRun.progress?.percent_done) : null;
+  const percentLabel = percent ? ` Progress: ${percent}.` : "";
+  node.textContent = `${actionLabel} running now.${tag}${percentLabel} Started at ${startedAt}.`;
   node.className = "run-indicator";
+}
+
+function renderBackupProgress(currentRun) {
+  const percentNode = document.getElementById("backup-progress-percent");
+  const barNode = document.getElementById("backup-progress-bar");
+  const summaryNode = document.getElementById("backup-progress-summary");
+  const currentNode = document.getElementById("backup-progress-current");
+
+  if (!currentRun || currentRun.action !== "backup") {
+    percentNode.textContent = "Idle";
+    barNode.style.width = "0%";
+    summaryNode.textContent = "No backup in progress.";
+    currentNode.textContent = "";
+    return;
+  }
+
+  const progress = currentRun.progress || {};
+  const percent = formatPercent(progress.percent_done);
+  percentNode.textContent = percent || "Running";
+  barNode.style.width = percent || "8%";
+
+  const summaryParts = [];
+  if (typeof progress.files_done === "number" && typeof progress.total_files === "number") {
+    summaryParts.push(`${progress.files_done} / ${progress.total_files} files`);
+  }
+  const bytesDone = formatBytes(progress.bytes_done);
+  const totalBytes = formatBytes(progress.total_bytes);
+  if (bytesDone && totalBytes) {
+    summaryParts.push(`${bytesDone} / ${totalBytes}`);
+  } else if (bytesDone) {
+    summaryParts.push(bytesDone);
+  }
+  const remaining = formatDuration(progress.seconds_remaining);
+  if (remaining) {
+    summaryParts.push(`ETA ${remaining}`);
+  }
+  summaryNode.textContent = summaryParts.join(" | ") || "Collecting progress from restic.";
+  currentNode.textContent = progress.current_file ? `Current file: ${progress.current_file}` : "";
 }
 
 function switchView(nextView) {
@@ -230,6 +309,7 @@ function renderStatus() {
 
   const currentRun = state.runtime?.current_run || payload.current_run;
   renderRunIndicator();
+  renderBackupProgress(currentRun);
   document.getElementById("status-gate").textContent = payload.preflight?.ok ? "PASS" : "BLOCKED";
   document.getElementById("status-failures").textContent = (payload.preflight?.failures || []).join("\n") || "No blocking failures.";
   document.getElementById("snapshot-count").textContent = String((payload.snapshots || []).length);
@@ -387,6 +467,14 @@ function applyOptimisticBackupState(tag) {
       action: "backup",
       started_at: new Date().toISOString(),
       tag,
+      progress: {
+        phase: "starting",
+        percent_done: 0,
+        files_done: 0,
+        bytes_done: 0,
+        current_file: null,
+        current_files: [],
+      },
     },
     last_successful_backup: state.runtime?.last_successful_backup || state.status?.last_successful_backup || null,
   };

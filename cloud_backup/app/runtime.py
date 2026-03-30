@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,6 +60,61 @@ def run_command(command: list[str], env: dict[str, str] | None = None, timeout: 
     )
 
 
+def run_command_streaming(
+    command: list[str],
+    env: dict[str, str] | None = None,
+    timeout: int = 600,
+    on_stdout_line: Callable[[str], None] | None = None,
+    on_stderr_line: Callable[[str], None] | None = None,
+) -> CommandResult:
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=merged_env,
+        bufsize=1,
+    )
+
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+
+    def reader(stream: Any, parts: list[str], callback: Callable[[str], None] | None) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                parts.append(line)
+                if callback is not None:
+                    callback(line)
+        finally:
+            stream.close()
+
+    stdout_thread = threading.Thread(target=reader, args=(process.stdout, stdout_parts, on_stdout_line), daemon=True)
+    stderr_thread = threading.Thread(target=reader, args=(process.stderr, stderr_parts, on_stderr_line), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+
+    try:
+        code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        code = process.wait()
+        raise
+    finally:
+        stdout_thread.join()
+        stderr_thread.join()
+
+    return CommandResult(
+        code=code,
+        stdout="".join(stdout_parts),
+        stderr="".join(stderr_parts),
+        command=command,
+    )
+
+
 def append_log(name: str, payload: dict[str, Any]) -> Path:
     target = log_dir() / name
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -77,6 +133,16 @@ def begin_run(action: str, **details: Any) -> dict[str, Any] | None:
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state_file.write_text(json.dumps(_CURRENT_RUN, sort_keys=True) + "\n", encoding="utf-8")
         return None
+
+
+def update_run_progress(progress: dict[str, Any]) -> None:
+    with _RUN_STATE_LOCK:
+        if _CURRENT_RUN is None:
+            return
+        _CURRENT_RUN["progress"] = progress
+        state_file = current_run_state_file()
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(_CURRENT_RUN, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def end_run() -> None:

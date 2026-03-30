@@ -8,7 +8,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.configuration import default_config
-from app.operations import build_backup_command, normalize_bandwidth_limit, recover_interrupted_backup, run_post_failure_prune
+from app.operations import (
+    build_backup_command,
+    normalize_bandwidth_limit,
+    parse_restic_progress_line,
+    recover_interrupted_backup,
+    run_post_failure_prune,
+)
 from app.runtime import CommandResult
 
 
@@ -46,6 +52,25 @@ class BackupCommandTests(unittest.TestCase):
         self.assertEqual(payload["action"], "prune")
         self.assertEqual(payload["phase"], "post-failure")
         self.assertEqual(payload["trigger_action"], "backup")
+
+    def test_parse_restic_progress_status_line(self) -> None:
+        payload = parse_restic_progress_line(
+            '{"message_type":"status","percent_done":0.42,"total_files":100,"files_done":42,"total_bytes":1000,"bytes_done":420,"current_files":["/source/raid1/documents/file.txt"],"seconds_remaining":120}'
+        )
+
+        self.assertEqual(payload["phase"], "running")
+        self.assertEqual(payload["percent_done"], 0.42)
+        self.assertEqual(payload["files_done"], 42)
+        self.assertEqual(payload["current_file"], "/source/raid1/documents/file.txt")
+
+    def test_parse_restic_progress_summary_line(self) -> None:
+        payload = parse_restic_progress_line(
+            '{"message_type":"summary","files_new":2,"files_changed":3,"files_unmodified":5,"total_files_processed":10,"total_bytes_processed":2048,"snapshot_id":"abc123"}'
+        )
+
+        self.assertEqual(payload["phase"], "finalizing")
+        self.assertEqual(payload["snapshot_id"], "abc123")
+        self.assertEqual(payload["total_files_processed"], 10)
 
     def test_recover_interrupted_backup_runs_cleanup_once(self) -> None:
         interrupted = {"action": "backup", "started_at": "2026-03-29T03:00:00+00:00", "tag": "scheduled"}
