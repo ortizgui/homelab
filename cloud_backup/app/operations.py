@@ -494,6 +494,16 @@ def list_logs(limit: int = 200) -> dict[str, Any]:
     return json_response(True, files=files, operations=operations)
 
 
+def runtime_status() -> dict[str, Any]:
+    last_backup_file = state_dir() / "last_successful_backup.txt"
+    last_backup = last_backup_file.read_text(encoding="utf-8").strip() if last_backup_file.exists() else None
+    return json_response(
+        True,
+        current_run=current_run(),
+        last_successful_backup=last_backup,
+    )
+
+
 def status() -> dict[str, Any]:
     recover_interrupted_backup()
     config = load_config()

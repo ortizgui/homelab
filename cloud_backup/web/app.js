@@ -1,15 +1,57 @@
+const POLL_INTERVAL_IDLE_MS = 15000;
+const POLL_INTERVAL_ACTIVE_MS = 3000;
+const FULL_REFRESH_INTERVAL_IDLE_MS = 45000;
+const FULL_REFRESH_INTERVAL_ACTIVE_MS = 9000;
+const BACKUP_REQUEST_TIMEOUT_MS = 5000;
+
 const state = {
   config: null,
   status: null,
+  runtime: null,
+  logs: [],
+  lastUpdated: {
+    status: null,
+    logs: null,
+    runtime: null,
+  },
+  sync: {
+    runtime: "idle",
+    status: "idle",
+    logs: "idle",
+  },
+  requestIds: {
+    runtime: 0,
+    status: 0,
+    logs: 0,
+  },
+  pollHandle: null,
+  lastFullRefreshAt: 0,
 };
-let statusPollHandle = null;
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const text = await response.text();
+  const { timeoutMs = 30000, headers = {}, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timeoutHandle = window.setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  let text;
+  try {
+    response = await fetch(path, {
+      ...fetchOptions,
+      headers: {
+        ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+        ...headers,
+      },
+      signal: controller.signal,
+    });
+    text = await response.text();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Request timed out");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutHandle);
+  }
   let payload;
   try {
     payload = text ? JSON.parse(text) : {};
@@ -39,9 +81,43 @@ function formatTimestamp(value) {
   return date.toLocaleString();
 }
 
+function hasActiveRun() {
+  return Boolean(state.runtime?.current_run || state.status?.current_run);
+}
+
+function setSyncState(key, nextState) {
+  state.sync[key] = nextState;
+  renderSyncState();
+}
+
+function renderSyncState() {
+  const node = document.getElementById("sync-status");
+  const detail = document.getElementById("sync-updated");
+  const currentStates = Object.values(state.sync);
+
+  if (currentStates.includes("error")) {
+    node.textContent = "Sync degraded";
+    node.className = "sync-pill sync-error";
+  } else if (hasActiveRun() || currentStates.includes("loading")) {
+    node.textContent = hasActiveRun() ? "Live monitoring" : "Syncing";
+    node.className = "sync-pill sync-active";
+  } else {
+    node.textContent = "In sync";
+    node.className = "sync-pill";
+  }
+
+  const latestTimestamp = [state.lastUpdated.runtime, state.lastUpdated.status, state.lastUpdated.logs]
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  detail.textContent = latestTimestamp
+    ? `Last update: ${formatTimestamp(latestTimestamp)}`
+    : "The dashboard is connecting to the backend.";
+}
+
 function renderRunIndicator() {
   const node = document.getElementById("run-indicator");
-  const currentRun = state.status?.current_run;
+  const currentRun = state.runtime?.current_run || state.status?.current_run;
   if (!currentRun) {
     node.textContent = "";
     node.className = "run-indicator hidden";
@@ -148,12 +224,16 @@ function renderConfig() {
 
 function renderStatus() {
   const payload = state.status;
-  const currentRun = payload.current_run;
+  if (!payload) {
+    return;
+  }
+
+  const currentRun = state.runtime?.current_run || payload.current_run;
   renderRunIndicator();
-  document.getElementById("status-gate").textContent = payload.preflight.ok ? "PASS" : "BLOCKED";
-  document.getElementById("status-failures").textContent = (payload.preflight.failures || []).join("\n") || "No blocking failures.";
+  document.getElementById("status-gate").textContent = payload.preflight?.ok ? "PASS" : "BLOCKED";
+  document.getElementById("status-failures").textContent = (payload.preflight?.failures || []).join("\n") || "No blocking failures.";
   document.getElementById("snapshot-count").textContent = String((payload.snapshots || []).length);
-  document.getElementById("last-backup").textContent = payload.last_successful_backup || "No successful backup yet.";
+  document.getElementById("last-backup").textContent = state.runtime?.last_successful_backup || payload.last_successful_backup || "No successful backup yet.";
   document.getElementById("repo-usage").textContent = payload.stats?.total_size || "N/A";
   document.getElementById("repo-files").textContent = JSON.stringify(payload.stats || {}, null, 2);
   const runButton = document.getElementById("run-backup");
@@ -164,30 +244,152 @@ function renderStatus() {
     runButton.disabled = false;
     runButton.textContent = "Run backup";
   }
-  document.getElementById("preflight-list").innerHTML = "";
-  (payload.preflight.source_results || []).forEach((entry) => {
+  const preflightList = document.getElementById("preflight-list");
+  preflightList.innerHTML = "";
+  (payload.preflight?.source_results || []).forEach((entry) => {
     const li = document.createElement("li");
     li.textContent = `${entry.path}: exists=${entry.exists} readable=${entry.readable} non_empty=${entry.non_empty}`;
-    document.getElementById("preflight-list").appendChild(li);
+    preflightList.appendChild(li);
   });
   document.getElementById("restore-snapshots").textContent = JSON.stringify(payload.snapshots || [], null, 2);
 }
 
-async function loadAll() {
-  const [configPayload, statusPayload, logsPayload] = await Promise.all([
-    api("/api/config"),
-    api("/api/status"),
-    api("/api/logs"),
-  ]);
-  state.config = configPayload.config;
-  state.status = statusPayload;
+function renderLogs() {
+  const output = document.getElementById("logs-output");
+  if (!state.logs.length) {
+    output.textContent = "No operations logged yet.";
+    return;
+  }
+
+  output.textContent = state.logs
+    .slice()
+    .reverse()
+    .map((entry) => {
+      const timestamp = formatTimestamp(entry.timestamp);
+      const action = entry.action || entry.phase || "event";
+      const status = entry.ok === true ? "OK" : entry.ok === false ? "ERROR" : "INFO";
+      const summary = entry.message || entry.tag || entry.snapshot_id || "";
+      return [timestamp, status, action, summary].filter(Boolean).join(" | ");
+    })
+    .join("\n");
+}
+
+async function loadConfig() {
+  const payload = await api("/api/config");
+  state.config = payload.config;
   renderConfig();
-  renderStatus();
-  document.getElementById("logs-output").textContent = JSON.stringify(logsPayload.operations || [], null, 2);
+}
+
+async function loadRuntime() {
+  const requestId = ++state.requestIds.runtime;
+  setSyncState("runtime", "loading");
+  try {
+    const payload = await api("/api/runtime", { timeoutMs: 10000 });
+    if (requestId !== state.requestIds.runtime) {
+      return;
+    }
+    state.runtime = payload;
+    state.lastUpdated.runtime = payload.timestamp;
+    setSyncState("runtime", "idle");
+    renderStatus();
+  } catch (error) {
+    if (requestId === state.requestIds.runtime) {
+      setSyncState("runtime", "error");
+    }
+    throw error;
+  }
+}
+
+async function loadStatus() {
+  const requestId = ++state.requestIds.status;
+  setSyncState("status", "loading");
+  try {
+    const payload = await api("/api/status", { timeoutMs: 30000 });
+    if (requestId !== state.requestIds.status) {
+      return;
+    }
+    state.status = payload;
+    state.lastUpdated.status = payload.timestamp;
+    state.lastFullRefreshAt = Date.now();
+    setSyncState("status", "idle");
+    renderStatus();
+  } catch (error) {
+    if (requestId === state.requestIds.status) {
+      setSyncState("status", "error");
+    }
+    throw error;
+  }
+}
+
+async function loadLogs() {
+  const requestId = ++state.requestIds.logs;
+  setSyncState("logs", "loading");
+  try {
+    const payload = await api("/api/logs", { timeoutMs: 15000 });
+    if (requestId !== state.requestIds.logs) {
+      return;
+    }
+    state.logs = payload.operations || [];
+    state.lastUpdated.logs = payload.timestamp;
+    setSyncState("logs", "idle");
+    renderLogs();
+  } catch (error) {
+    if (requestId === state.requestIds.logs) {
+      setSyncState("logs", "error");
+    }
+    throw error;
+  }
+}
+
+async function loadAll({ includeConfig = true } = {}) {
+  const tasks = [
+    loadRuntime(),
+    loadStatus(),
+    loadLogs(),
+  ];
+  if (includeConfig) {
+    tasks.push(loadConfig());
+  }
+  const results = await Promise.allSettled(tasks);
+  if (results.every((result) => result.status === "rejected")) {
+    throw results[0].reason;
+  }
 }
 
 async function refreshStatus() {
-  state.status = await api("/api/status");
+  await Promise.allSettled([loadRuntime(), loadStatus()]);
+}
+
+function shouldRunFullRefresh() {
+  const interval = hasActiveRun() ? FULL_REFRESH_INTERVAL_ACTIVE_MS : FULL_REFRESH_INTERVAL_IDLE_MS;
+  return Date.now() - state.lastFullRefreshAt >= interval;
+}
+
+function schedulePolling() {
+  window.clearTimeout(state.pollHandle);
+  state.pollHandle = window.setTimeout(async () => {
+    try {
+      await loadRuntime();
+      if (shouldRunFullRefresh()) {
+        await Promise.allSettled([loadStatus(), loadLogs()]);
+      }
+    } finally {
+      schedulePolling();
+    }
+  }, hasActiveRun() ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS);
+}
+
+function applyOptimisticBackupState(tag) {
+  state.runtime = {
+    ok: true,
+    timestamp: new Date().toISOString(),
+    current_run: {
+      action: "backup",
+      started_at: new Date().toISOString(),
+      tag,
+    },
+    last_successful_backup: state.runtime?.last_successful_backup || state.status?.last_successful_backup || null,
+  };
   renderStatus();
 }
 
@@ -197,19 +399,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("reload-status").addEventListener("click", async () => {
-    await loadAll();
+    await loadAll({ includeConfig: false });
     flash("Status reloaded.");
   });
 
   document.getElementById("run-preflight").addEventListener("click", async () => {
     const payload = await api("/api/preflight");
     flash(payload.ok ? "Preflight passed." : `Preflight blocked: ${payload.failures.join(", ")}`, payload.ok ? "info" : "error");
-    state.status = await api("/api/status");
-    renderStatus();
+    await refreshStatus();
   });
 
   document.getElementById("run-backup").addEventListener("click", async () => {
-    if (state.status?.current_run?.action === "backup") {
+    if (hasActiveRun() && (state.runtime?.current_run || state.status?.current_run)?.action === "backup") {
       flash("A backup is already running.", "error");
       return;
     }
@@ -218,24 +419,35 @@ document.addEventListener("DOMContentLoaded", async () => {
     button.disabled = true;
     button.textContent = "Backup running...";
     flash("Backup request sent. The first run can take a long time to finish.", "info");
+    applyOptimisticBackupState("manual-web");
+    schedulePolling();
     try {
-      const payload = await api("/api/actions/backup", { method: "POST", body: JSON.stringify({ tag: "manual-web" }) });
+      const payload = await api("/api/actions/backup", {
+        method: "POST",
+        body: JSON.stringify({ tag: "manual-web" }),
+        timeoutMs: BACKUP_REQUEST_TIMEOUT_MS,
+      });
       flash(payload.ok ? "Backup completed successfully." : "Backup failed.", payload.ok ? "info" : "error");
-      await loadAll();
+      await loadAll({ includeConfig: false });
     } catch (error) {
       try {
-        await refreshStatus();
+        await loadRuntime();
+        await Promise.allSettled([loadStatus(), loadLogs()]);
       } catch {
         // Ignore status refresh failures and fall back to the original error.
       }
-      if (state.status?.current_run?.action === "backup") {
+      const currentRun = state.runtime?.current_run || state.status?.current_run;
+      if (currentRun?.action === "backup") {
         flash("Backup is still running on the server. The web request timed out while waiting for completion.", "info");
       } else {
         flash(`Backup failed to start: ${error.message}`, "error");
       }
     } finally {
-      button.disabled = false;
-      button.textContent = originalLabel;
+      const activeRun = state.runtime?.current_run || state.status?.current_run;
+      if (activeRun?.action !== "backup") {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
     }
   });
 
@@ -299,14 +511,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   try {
+    renderLogs();
+    renderSyncState();
     await loadAll();
-    statusPollHandle = window.setInterval(async () => {
-      try {
-        await refreshStatus();
-      } catch {
-        // Keep the last known UI state if background refresh fails.
-      }
-    }, 15000);
+    schedulePolling();
   } catch (error) {
     flash(error.message, "error");
   }

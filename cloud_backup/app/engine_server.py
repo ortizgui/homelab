@@ -14,6 +14,7 @@ from .operations import (
     preflight,
     repository_stats,
     restore_snapshot,
+    runtime_status,
     run_backup,
     run_forget,
     run_prune,
@@ -35,6 +36,9 @@ class EngineHandler(JsonHandler):
                 return
             if parsed.path == "/engine/status":
                 self.send_json(status())
+                return
+            if parsed.path == "/engine/runtime":
+                self.send_json(runtime_status())
                 return
             if parsed.path == "/engine/preflight":
                 self.send_json(preflight(config))
