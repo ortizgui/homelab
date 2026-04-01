@@ -44,20 +44,32 @@ def run_command(command: list[str], env: dict[str, str] | None = None, timeout: 
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        env=merged_env,
-        timeout=timeout,
-        check=False,
-    )
-    return CommandResult(
-        code=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        command=command,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env=merged_env,
+            timeout=timeout,
+            check=False,
+        )
+        return CommandResult(
+            code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            command=command,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        timeout_message = f"Command timed out after {timeout}s: {' '.join(command)}"
+        stderr = f"{stderr.rstrip()}\n{timeout_message}".strip()
+        return CommandResult(
+            code=124,
+            stdout=stdout,
+            stderr=stderr,
+            command=command,
+        )
 
 
 def run_command_streaming(
@@ -97,15 +109,20 @@ def run_command_streaming(
     stdout_thread.start()
     stderr_thread.start()
 
+    timed_out = False
     try:
         code = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        timed_out = True
         process.kill()
-        code = process.wait()
-        raise
+        code = 124
     finally:
         stdout_thread.join()
         stderr_thread.join()
+
+    if timed_out:
+        timeout_message = f"Command timed out after {timeout}s: {' '.join(command)}"
+        stderr_parts.append(f"{timeout_message}\n")
 
     return CommandResult(
         code=code,

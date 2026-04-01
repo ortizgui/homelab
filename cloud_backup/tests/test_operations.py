@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.configuration import default_config
 from app.operations import (
     build_backup_command,
+    check_repository_access,
     normalize_bandwidth_limit,
     parse_restic_progress_line,
     recover_interrupted_backup,
@@ -90,6 +91,22 @@ class BackupCommandTests(unittest.TestCase):
         self.assertEqual(payload["action"], "recovery")
         self.assertEqual(payload["phase"], "startup-prune")
         self.assertEqual(payload["interrupted_run"], interrupted)
+
+    def test_repository_access_timeout_is_reported_without_traceback(self) -> None:
+        config = default_config()
+        timeout_result = CommandResult(
+            code=124,
+            stdout="",
+            stderr="Command timed out after 30s: restic cat config",
+            command=["restic", "cat", "config"],
+        )
+
+        with patch("app.operations.run_command", side_effect=[timeout_result, timeout_result]):
+            payload = check_repository_access(config)
+
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["initialized"])
+        self.assertIn("timed out", payload["stderr"].lower())
 
 
 if __name__ == "__main__":

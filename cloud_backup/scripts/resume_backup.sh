@@ -66,7 +66,10 @@ if [[ -f "${STATE_FILE}" ]]; then
 fi
 
 echo "Executando preflight..."
-run_engine_cli preflight
+if ! run_engine_cli preflight; then
+  echo "Preflight bloqueou a retomada. Revise a conectividade com o repositorio remoto e rode novamente." >&2
+  exit 1
+fi
 
 echo "Iniciando backup com tag ${backup_tag}..."
 run_engine_cli backup "${backup_tag}"
