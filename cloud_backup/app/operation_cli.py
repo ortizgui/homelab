@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 
-from .operations import healthcheck, preflight, restore_snapshot, run_backup, run_forget, run_prune, status
+from .operations import healthcheck, preflight, restore_snapshot, run_backup, run_forget, run_prune, status, unlock_repository
 
 
 def main() -> int:
@@ -21,6 +21,8 @@ def main() -> int:
         payload = run_forget()
     elif action == "prune":
         payload = run_prune()
+    elif action == "unlock":
+        payload = unlock_repository()
     elif action == "restore":
         if len(sys.argv) < 4:
             raise SystemExit("usage: restore <snapshot_id> <target> [include_path]")

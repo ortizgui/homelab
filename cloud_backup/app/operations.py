@@ -383,6 +383,23 @@ def run_post_failure_prune(config: dict[str, Any], trigger_action: str) -> dict[
     return payload
 
 
+def unlock_repository(remove_all: bool = True) -> dict[str, Any]:
+    config = load_config()
+    command = ["restic", "unlock"]
+    if remove_all:
+        command.append("--remove-all")
+    result = run_command(command, env=build_restic_env(config), timeout=120)
+    payload = json_response(
+        result.code == 0,
+        action="unlock",
+        command=command,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
+    append_log("operations.jsonl", payload)
+    return payload
+
+
 def recover_interrupted_backup() -> dict[str, Any] | None:
     interrupted = interrupted_run()
     if interrupted is None:

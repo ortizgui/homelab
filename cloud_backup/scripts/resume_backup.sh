@@ -53,17 +53,13 @@ run_engine_cli() {
   run_compose exec -T backup-engine python3 -m app.operation_cli "$@"
 }
 
-run_engine_shell() {
-  run_compose exec -T backup-engine sh -lc "$1"
-}
-
 interrupted_state_exists() {
-  run_engine_shell "test -f /data/state/current-run.json"
+  run_compose exec -T backup-engine sh -lc "test -f /data/state/current-run.json"
 }
 
 attempt_repository_unlock() {
   echo "Tentando remover locks pendentes do restic..."
-  run_engine_shell "restic unlock --remove-all"
+  run_engine_cli unlock
 }
 
 echo "Subindo a stack de backup..."

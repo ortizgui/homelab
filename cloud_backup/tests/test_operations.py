@@ -15,6 +15,7 @@ from app.operations import (
     parse_restic_progress_line,
     recover_interrupted_backup,
     run_post_failure_prune,
+    unlock_repository,
 )
 from app.runtime import CommandResult
 
@@ -107,6 +108,19 @@ class BackupCommandTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["initialized"])
         self.assertIn("timed out", payload["stderr"].lower())
+
+    def test_unlock_repository_uses_restic_env_and_logs(self) -> None:
+        result = CommandResult(code=0, stdout="unlocked", stderr="", command=["restic", "unlock", "--remove-all"])
+
+        with patch("app.operations.load_config", return_value=default_config()):
+            with patch("app.operations.run_command", return_value=result) as run_command_mock:
+                with patch("app.operations.append_log") as append_log_mock:
+                    payload = unlock_repository()
+
+        run_command_mock.assert_called_once()
+        append_log_mock.assert_called_once()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "unlock")
 
 
 if __name__ == "__main__":

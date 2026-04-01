@@ -19,6 +19,7 @@ from .operations import (
     run_forget,
     run_prune,
     status,
+    unlock_repository,
 )
 from .runtime import json_response
 
@@ -72,6 +73,9 @@ class EngineHandler(JsonHandler):
                 return
             if parsed.path == "/engine/prune":
                 self.send_json(run_prune())
+                return
+            if parsed.path == "/engine/unlock":
+                self.send_json(unlock_repository())
                 return
             if parsed.path == "/engine/restore":
                 self.send_json(
