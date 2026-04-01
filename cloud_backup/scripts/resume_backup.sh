@@ -5,7 +5,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
-STATE_FILE="${CLOUD_BACKUP_STATE_FILE:-${PROJECT_DIR}/data/state/current-run.json}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-180}"
 WAIT_INTERVAL="${WAIT_INTERVAL:-5}"
 TAG_PREFIX="${TAG_PREFIX:-resume}"
@@ -54,21 +53,46 @@ run_engine_cli() {
   run_compose exec -T backup-engine python3 -m app.operation_cli "$@"
 }
 
+run_engine_shell() {
+  run_compose exec -T backup-engine sh -lc "$1"
+}
+
+interrupted_state_exists() {
+  run_engine_shell "test -f /data/state/current-run.json"
+}
+
+attempt_repository_unlock() {
+  echo "Tentando remover locks pendentes do restic..."
+  run_engine_shell "restic unlock --remove-all"
+}
+
 echo "Subindo a stack de backup..."
 run_compose up -d backup-engine backup-api backup-scheduler backup-web
 
 echo "Aguardando o backup-engine ficar disponivel..."
 wait_for_engine
 
-if [[ -f "${STATE_FILE}" ]]; then
-  echo "Execucao interrompida detectada em ${STATE_FILE}."
+if interrupted_state_exists; then
+  echo "Execucao interrompida detectada em /data/state/current-run.json."
   echo "O proximo ciclo fara a limpeza de recuperacao antes do backup."
 fi
 
 echo "Executando preflight..."
-if ! run_engine_cli preflight; then
-  echo "Preflight bloqueou a retomada. Revise a conectividade com o repositorio remoto e rode novamente." >&2
-  exit 1
+if ! preflight_output="$(run_engine_cli preflight 2>&1)"; then
+  printf '%s\n' "${preflight_output}"
+  if grep -q '"Repository access failed"' <<<"${preflight_output}"; then
+    attempt_repository_unlock
+    echo "Reexecutando preflight apos unlock..."
+    if ! run_engine_cli preflight; then
+      echo "Preflight ainda bloqueou a retomada. Revise a conectividade com o repositorio remoto e rode novamente." >&2
+      exit 1
+    fi
+  else
+    echo "Preflight bloqueou a retomada. Revise as validacoes acima e rode novamente." >&2
+    exit 1
+  fi
+else
+  printf '%s\n' "${preflight_output}"
 fi
 
 echo "Iniciando backup com tag ${backup_tag}..."

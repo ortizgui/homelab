@@ -137,7 +137,7 @@ cd /Volumes/homeX/git/homelab/cloud_backup
 ./scripts/resume_backup.sh
 ```
 
-The script brings the backup services back up, waits for `backup-engine`, runs `preflight`, and then starts a new backup. If a previous run left `state/current-run.json`, the engine performs its recovery prune automatically before continuing.
+The script brings the backup services back up, waits for `backup-engine`, runs `preflight`, and then starts a new backup. If a previous run left `state/current-run.json`, the engine performs its recovery prune automatically before continuing. When repository access fails after an interrupted run, the script also attempts `restic unlock --remove-all` once before aborting.
 
 ## disk-health integration
 
