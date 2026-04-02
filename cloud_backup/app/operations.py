@@ -20,6 +20,7 @@ from .runtime import (
     interrupted_run,
     json_response,
     list_json_logs,
+    read_persisted_run,
     run_command,
     run_command_streaming,
     update_run_progress,
@@ -771,6 +772,22 @@ def dashboard_summary() -> dict[str, Any]:
         latest_preflight=cache.get("latest_preflight") or latest_preflight_result(),
         last_action=cache.get("last_action"),
         cache_updated_at=cache.get("updated_at"),
+    )
+
+
+def cached_dashboard_summary() -> dict[str, Any]:
+    cache = load_dashboard_cache()
+    last_backup_file = state_dir() / "last_successful_backup.txt"
+    last_backup = last_backup_file.read_text(encoding="utf-8").strip() if last_backup_file.exists() else None
+    return json_response(
+        True,
+        current_run=read_persisted_run(),
+        last_successful_backup=last_backup,
+        latest_backup=cache.get("latest_backup"),
+        latest_preflight=cache.get("latest_preflight"),
+        last_action=cache.get("last_action"),
+        cache_updated_at=cache.get("updated_at"),
+        remote_quota=cache.get("remote_quota", {}),
     )
 
 

@@ -174,14 +174,23 @@ def current_run() -> dict[str, Any] | None:
         return dict(_CURRENT_RUN) if _CURRENT_RUN is not None else None
 
 
+def read_persisted_run() -> dict[str, Any] | None:
+    state_file = current_run_state_file()
+    if not state_file.exists():
+        return None
+    try:
+        return json.loads(state_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
 def interrupted_run() -> dict[str, Any] | None:
     with _RUN_STATE_LOCK:
         if _CURRENT_RUN is not None:
             return None
-        state_file = current_run_state_file()
-        if not state_file.exists():
+        payload = read_persisted_run()
+        if payload is None:
             return None
-        payload = json.loads(state_file.read_text(encoding="utf-8"))
         pid = payload.get("pid")
         if isinstance(pid, int) and pid > 0:
             try:
