@@ -79,6 +79,22 @@ def load_latest_backup_entry():
     return latest
 
 
+def parse_backup_summary(entry):
+    stdout = entry.get("stdout") or ""
+    summary = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("message_type") == "summary":
+            summary = payload
+    return summary
+
+
 if state_file.exists():
     payload = json.loads(state_file.read_text(encoding="utf-8"))
     progress = payload.get("progress") or {}
@@ -121,6 +137,20 @@ if latest is not None:
     print(f"TIMESTAMP: {latest.get('timestamp', '-')}")
     if success_file.exists():
         print(f"LAST_SUCCESSFUL_BACKUP: {success_file.read_text(encoding='utf-8').strip()}")
+    summary = parse_backup_summary(latest)
+    if summary:
+        total_processed = fmt_bytes(summary.get("total_bytes_processed"))
+        if total_processed:
+            print(f"TOTAL_PROCESSED: {total_processed}")
+        total_files = summary.get("total_files_processed")
+        if isinstance(total_files, int):
+            print(f"FILES_PROCESSED: {total_files}")
+        snapshot_id = summary.get("snapshot_id")
+        if snapshot_id:
+            print(f"SNAPSHOT_ID: {snapshot_id}")
+        data_added = fmt_bytes(summary.get("data_added"))
+        if data_added:
+            print(f"DATA_ADDED: {data_added}")
     stderr = (latest.get("stderr") or "").strip()
     if stderr:
         print(f"DETAIL: {stderr.splitlines()[-1][:240]}")
