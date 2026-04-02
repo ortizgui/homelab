@@ -664,16 +664,12 @@ def latest_preflight_result(limit: int = 200) -> dict[str, Any] | None:
 
 def dashboard_summary() -> dict[str, Any]:
     runtime = runtime_status()
-    quota = remote_storage_quota()
     return json_response(
         True,
         current_run=runtime.get("current_run"),
         last_successful_backup=runtime.get("last_successful_backup"),
         latest_backup=latest_backup_result(),
         latest_preflight=latest_preflight_result(),
-        remote_quota=quota.get("quota", {}) if quota.get("ok") else {},
-        remote_quota_ok=quota.get("ok"),
-        remote_quota_message=quota.get("message"),
     )
 
 

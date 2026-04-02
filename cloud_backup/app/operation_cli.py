@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 
-from .operations import dashboard_summary, healthcheck, preflight, restore_snapshot, run_backup, run_forget, run_prune, status, unlock_repository
+from .operations import dashboard_summary, healthcheck, preflight, remote_storage_quota, restore_snapshot, run_backup, run_forget, run_prune, status, unlock_repository
 
 
 def main() -> int:
@@ -12,6 +12,8 @@ def main() -> int:
         payload = status()
     elif action == "summary":
         payload = dashboard_summary()
+    elif action == "remote-quota":
+        payload = remote_storage_quota()
     elif action == "healthcheck":
         payload = healthcheck()
     elif action == "preflight":

@@ -19,6 +19,7 @@ from .operations import (
     run_backup,
     run_forget,
     run_prune,
+    remote_storage_quota,
     status,
     unlock_repository,
 )
@@ -41,6 +42,9 @@ class EngineHandler(JsonHandler):
                 return
             if parsed.path == "/engine/summary":
                 self.send_json(dashboard_summary())
+                return
+            if parsed.path == "/engine/remote-quota":
+                self.send_json(remote_storage_quota())
                 return
             if parsed.path == "/engine/runtime":
                 self.send_json(runtime_status())

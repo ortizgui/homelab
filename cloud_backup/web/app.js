@@ -6,23 +6,27 @@ const BACKUP_REQUEST_TIMEOUT_MS = 5000;
 
 const state = {
   config: null,
+  remoteQuota: null,
   summary: null,
   status: null,
   runtime: null,
   logs: [],
   lastUpdated: {
+    remoteQuota: null,
     summary: null,
     status: null,
     logs: null,
     runtime: null,
   },
   sync: {
+    remoteQuota: "idle",
     summary: "idle",
     runtime: "idle",
     status: "idle",
     logs: "idle",
   },
   requestIds: {
+    remoteQuota: 0,
     summary: 0,
     runtime: 0,
     status: 0,
@@ -149,7 +153,7 @@ function renderSyncState() {
     node.className = "sync-pill";
   }
 
-  const latestTimestamp = [state.lastUpdated.runtime, state.lastUpdated.summary, state.lastUpdated.status, state.lastUpdated.logs]
+  const latestTimestamp = [state.lastUpdated.runtime, state.lastUpdated.remoteQuota, state.lastUpdated.summary, state.lastUpdated.status, state.lastUpdated.logs]
     .filter(Boolean)
     .sort()
     .at(-1);
@@ -367,16 +371,18 @@ function renderStatus() {
   document.getElementById("status-failures").textContent = preflight
     ? ((preflight.failures || []).join("\n") || "No blocking failures.")
     : "Waiting for the latest preflight result.";
-  document.getElementById("snapshot-count").textContent = Array.isArray(payload.snapshots) ? String(payload.snapshots.length) : "-";
+  document.getElementById("snapshot-count").textContent = Array.isArray(payload.snapshots)
+    ? String(payload.snapshots.length)
+    : (summary.latest_backup?.snapshot_id ? "1+" : "-");
   document.getElementById("last-backup").textContent = state.runtime?.last_successful_backup || summary.last_successful_backup || payload.last_successful_backup || "No successful backup yet.";
-  const quota = summary.remote_quota || {};
+  const quota = state.remoteQuota?.quota || {};
   const used = formatBytes(quota.used);
   const total = formatBytes(quota.total);
   const free = formatBytes(quota.free);
   document.getElementById("repo-usage").textContent = used && total ? `${used} / ${total}` : "N/A";
   document.getElementById("repo-files").textContent = free
     ? `Free: ${free}`
-    : (summary.remote_quota_ok === false ? (summary.remote_quota_message || "Remote quota unavailable.") : "Waiting for remote quota.");
+    : (state.remoteQuota?.ok === false ? (state.remoteQuota.message || "Remote quota unavailable.") : "Waiting for remote quota.");
   const runButton = document.getElementById("run-backup");
   if (currentRun?.action === "backup") {
     runButton.disabled = true;
@@ -466,6 +472,32 @@ async function loadSummary() {
   }
 }
 
+async function loadRemoteQuota() {
+  const requestId = ++state.requestIds.remoteQuota;
+  setSyncState("remoteQuota", "loading");
+  try {
+    const payload = await api("/api/remote-quota", { timeoutMs: 15000 });
+    if (requestId !== state.requestIds.remoteQuota) {
+      return;
+    }
+    state.remoteQuota = payload;
+    state.lastUpdated.remoteQuota = payload.timestamp;
+    setSyncState("remoteQuota", "idle");
+    renderStatus();
+  } catch (error) {
+    if (requestId === state.requestIds.remoteQuota) {
+      state.remoteQuota = {
+        ok: false,
+        message: error.message,
+        quota: {},
+      };
+      setSyncState("remoteQuota", "error");
+      renderStatus();
+    }
+    throw error;
+  }
+}
+
 async function loadStatus() {
   const requestId = ++state.requestIds.status;
   setSyncState("status", "loading");
@@ -510,9 +542,9 @@ async function loadLogs() {
 
 async function loadAll({ includeConfig = true } = {}) {
   const tasks = [
+    loadRemoteQuota(),
     loadSummary(),
     loadRuntime(),
-    loadStatus(),
     loadLogs(),
   ];
   if (includeConfig) {
@@ -525,7 +557,7 @@ async function loadAll({ includeConfig = true } = {}) {
 }
 
 async function refreshStatus() {
-  await Promise.allSettled([loadSummary(), loadRuntime(), loadStatus()]);
+  await Promise.allSettled([loadRemoteQuota(), loadSummary(), loadRuntime()]);
 }
 
 function shouldRunFullRefresh() {
@@ -539,7 +571,7 @@ function schedulePolling() {
     try {
       await loadRuntime();
       if (shouldRunFullRefresh()) {
-        await Promise.allSettled([loadSummary(), loadStatus(), loadLogs()]);
+        await Promise.allSettled([loadRemoteQuota(), loadSummary(), loadLogs()]);
       }
     } finally {
       schedulePolling();
@@ -575,7 +607,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("reload-status").addEventListener("click", async () => {
-    await loadAll({ includeConfig: false });
+    await Promise.allSettled([loadAll({ includeConfig: false }), loadStatus()]);
     flash("Status reloaded.");
   });
 
@@ -608,7 +640,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (error) {
       try {
         await loadRuntime();
-        await Promise.allSettled([loadSummary(), loadStatus(), loadLogs()]);
+        await Promise.allSettled([loadRemoteQuota(), loadSummary(), loadLogs(), loadStatus()]);
       } catch {
         // Ignore status refresh failures and fall back to the original error.
       }
