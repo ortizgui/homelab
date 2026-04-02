@@ -6,20 +6,24 @@ const BACKUP_REQUEST_TIMEOUT_MS = 5000;
 
 const state = {
   config: null,
+  summary: null,
   status: null,
   runtime: null,
   logs: [],
   lastUpdated: {
+    summary: null,
     status: null,
     logs: null,
     runtime: null,
   },
   sync: {
+    summary: "idle",
     runtime: "idle",
     status: "idle",
     logs: "idle",
   },
   requestIds: {
+    summary: 0,
     runtime: 0,
     status: 0,
     logs: 0,
@@ -121,7 +125,7 @@ function formatDuration(seconds) {
 }
 
 function hasActiveRun() {
-  return Boolean(state.runtime?.current_run || state.status?.current_run);
+  return Boolean(state.runtime?.current_run || state.summary?.current_run || state.status?.current_run);
 }
 
 function setSyncState(key, nextState) {
@@ -145,7 +149,7 @@ function renderSyncState() {
     node.className = "sync-pill";
   }
 
-  const latestTimestamp = [state.lastUpdated.runtime, state.lastUpdated.status, state.lastUpdated.logs]
+  const latestTimestamp = [state.lastUpdated.runtime, state.lastUpdated.summary, state.lastUpdated.status, state.lastUpdated.logs]
     .filter(Boolean)
     .sort()
     .at(-1);
@@ -156,7 +160,7 @@ function renderSyncState() {
 
 function renderRunIndicator() {
   const node = document.getElementById("run-indicator");
-  const currentRun = state.runtime?.current_run || state.status?.current_run;
+  const currentRun = state.runtime?.current_run || state.summary?.current_run || state.status?.current_run;
   if (!currentRun) {
     node.textContent = "";
     node.className = "run-indicator hidden";
@@ -210,6 +214,9 @@ function renderBackupProgress(currentRun) {
 }
 
 function findLatestBackupLog() {
+  if (state.summary?.latest_backup) {
+    return state.summary.latest_backup;
+  }
   return state.logs
     .slice()
     .reverse()
@@ -220,7 +227,7 @@ function renderLatestBackupResult() {
   const resultNode = document.getElementById("last-backup-result");
   const summaryNode = document.getElementById("last-backup-result-summary");
   const detailNode = document.getElementById("last-backup-result-detail");
-  const currentRun = state.runtime?.current_run || state.status?.current_run;
+  const currentRun = state.runtime?.current_run || state.summary?.current_run || state.status?.current_run;
 
   if (currentRun?.action === "backup") {
     const progress = currentRun.progress || {};
@@ -246,15 +253,12 @@ function renderLatestBackupResult() {
   resultNode.className = `metric metric-small ${ok ? "metric-success" : "metric-danger"}`;
   const tag = latest.tag ? ` Tag: ${latest.tag}.` : "";
   summaryNode.textContent = `${ok ? "Last backup finished successfully." : "Last backup finished with errors."}${tag} ${formatTimestamp(latest.timestamp)}`.trim();
-  const stderr = (latest.stderr || "").trim();
-  const stdout = (latest.stdout || "").trim();
-  if (stderr) {
-    detailNode.textContent = stderr.split("\n").slice(-1)[0];
-  } else if (stdout) {
-    detailNode.textContent = "Result registered in operation log.";
+  const detail = (latest.detail || "").trim();
+  if (detail) {
+    detailNode.textContent = detail;
   } else {
-    detailNode.textContent = state.runtime?.last_successful_backup || state.status?.last_successful_backup
-      ? `Last successful backup: ${formatTimestamp(state.runtime?.last_successful_backup || state.status?.last_successful_backup)}`
+    detailNode.textContent = state.runtime?.last_successful_backup || state.summary?.last_successful_backup || state.status?.last_successful_backup
+      ? `Last successful backup: ${formatTimestamp(state.runtime?.last_successful_backup || state.summary?.last_successful_backup || state.status?.last_successful_backup)}`
       : "";
   }
 }
@@ -352,21 +356,27 @@ function renderConfig() {
 }
 
 function renderStatus() {
-  const payload = state.status;
-  if (!payload) {
-    return;
-  }
-
-  const currentRun = state.runtime?.current_run || payload.current_run;
+  const payload = state.status || {};
+  const summary = state.summary || {};
+  const preflight = payload.preflight || summary.latest_preflight || null;
+  const currentRun = state.runtime?.current_run || summary.current_run || payload.current_run;
   renderRunIndicator();
   renderBackupProgress(currentRun);
   renderLatestBackupResult();
-  document.getElementById("status-gate").textContent = payload.preflight?.ok ? "PASS" : "BLOCKED";
-  document.getElementById("status-failures").textContent = (payload.preflight?.failures || []).join("\n") || "No blocking failures.";
-  document.getElementById("snapshot-count").textContent = String((payload.snapshots || []).length);
-  document.getElementById("last-backup").textContent = state.runtime?.last_successful_backup || payload.last_successful_backup || "No successful backup yet.";
-  document.getElementById("repo-usage").textContent = payload.stats?.total_size || "N/A";
-  document.getElementById("repo-files").textContent = JSON.stringify(payload.stats || {}, null, 2);
+  document.getElementById("status-gate").textContent = preflight ? (preflight.ok ? "PASS" : "BLOCKED") : "UNAVAILABLE";
+  document.getElementById("status-failures").textContent = preflight
+    ? ((preflight.failures || []).join("\n") || "No blocking failures.")
+    : "Waiting for the latest preflight result.";
+  document.getElementById("snapshot-count").textContent = Array.isArray(payload.snapshots) ? String(payload.snapshots.length) : "-";
+  document.getElementById("last-backup").textContent = state.runtime?.last_successful_backup || summary.last_successful_backup || payload.last_successful_backup || "No successful backup yet.";
+  const quota = summary.remote_quota || {};
+  const used = formatBytes(quota.used);
+  const total = formatBytes(quota.total);
+  const free = formatBytes(quota.free);
+  document.getElementById("repo-usage").textContent = used && total ? `${used} / ${total}` : "N/A";
+  document.getElementById("repo-files").textContent = free
+    ? `Free: ${free}`
+    : (summary.remote_quota_ok === false ? (summary.remote_quota_message || "Remote quota unavailable.") : "Waiting for remote quota.");
   const runButton = document.getElementById("run-backup");
   if (currentRun?.action === "backup") {
     runButton.disabled = true;
@@ -377,11 +387,16 @@ function renderStatus() {
   }
   const preflightList = document.getElementById("preflight-list");
   preflightList.innerHTML = "";
-  (payload.preflight?.source_results || []).forEach((entry) => {
+  (preflight?.source_results || []).forEach((entry) => {
     const li = document.createElement("li");
     li.textContent = `${entry.path}: exists=${entry.exists} readable=${entry.readable} non_empty=${entry.non_empty}`;
     preflightList.appendChild(li);
   });
+  if (!preflightList.children.length) {
+    const li = document.createElement("li");
+    li.textContent = preflight ? "No blocked sources." : "Detailed source checks will appear after a successful status refresh.";
+    preflightList.appendChild(li);
+  }
   document.getElementById("restore-snapshots").textContent = JSON.stringify(payload.snapshots || [], null, 2);
 }
 
@@ -431,6 +446,26 @@ async function loadRuntime() {
   }
 }
 
+async function loadSummary() {
+  const requestId = ++state.requestIds.summary;
+  setSyncState("summary", "loading");
+  try {
+    const payload = await api("/api/summary", { timeoutMs: 15000 });
+    if (requestId !== state.requestIds.summary) {
+      return;
+    }
+    state.summary = payload;
+    state.lastUpdated.summary = payload.timestamp;
+    setSyncState("summary", "idle");
+    renderStatus();
+  } catch (error) {
+    if (requestId === state.requestIds.summary) {
+      setSyncState("summary", "error");
+    }
+    throw error;
+  }
+}
+
 async function loadStatus() {
   const requestId = ++state.requestIds.status;
   setSyncState("status", "loading");
@@ -475,6 +510,7 @@ async function loadLogs() {
 
 async function loadAll({ includeConfig = true } = {}) {
   const tasks = [
+    loadSummary(),
     loadRuntime(),
     loadStatus(),
     loadLogs(),
@@ -489,7 +525,7 @@ async function loadAll({ includeConfig = true } = {}) {
 }
 
 async function refreshStatus() {
-  await Promise.allSettled([loadRuntime(), loadStatus()]);
+  await Promise.allSettled([loadSummary(), loadRuntime(), loadStatus()]);
 }
 
 function shouldRunFullRefresh() {
@@ -503,7 +539,7 @@ function schedulePolling() {
     try {
       await loadRuntime();
       if (shouldRunFullRefresh()) {
-        await Promise.allSettled([loadStatus(), loadLogs()]);
+        await Promise.allSettled([loadSummary(), loadStatus(), loadLogs()]);
       }
     } finally {
       schedulePolling();
@@ -528,7 +564,7 @@ function applyOptimisticBackupState(tag) {
         current_files: [],
       },
     },
-    last_successful_backup: state.runtime?.last_successful_backup || state.status?.last_successful_backup || null,
+    last_successful_backup: state.runtime?.last_successful_backup || state.summary?.last_successful_backup || state.status?.last_successful_backup || null,
   };
   renderStatus();
 }
@@ -550,7 +586,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("run-backup").addEventListener("click", async () => {
-    if (hasActiveRun() && (state.runtime?.current_run || state.status?.current_run)?.action === "backup") {
+    if (hasActiveRun() && (state.runtime?.current_run || state.summary?.current_run || state.status?.current_run)?.action === "backup") {
       flash("A backup is already running.", "error");
       return;
     }
@@ -572,18 +608,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (error) {
       try {
         await loadRuntime();
-        await Promise.allSettled([loadStatus(), loadLogs()]);
+        await Promise.allSettled([loadSummary(), loadStatus(), loadLogs()]);
       } catch {
         // Ignore status refresh failures and fall back to the original error.
       }
-      const currentRun = state.runtime?.current_run || state.status?.current_run;
+      const currentRun = state.runtime?.current_run || state.summary?.current_run || state.status?.current_run;
       if (currentRun?.action === "backup") {
         flash("Backup is still running on the server. The web request timed out while waiting for completion.", "info");
       } else {
         flash(`Backup failed to start: ${error.message}`, "error");
       }
     } finally {
-      const activeRun = state.runtime?.current_run || state.status?.current_run;
+      const activeRun = state.runtime?.current_run || state.summary?.current_run || state.status?.current_run;
       if (activeRun?.action !== "backup") {
         button.disabled = false;
         button.textContent = originalLabel;

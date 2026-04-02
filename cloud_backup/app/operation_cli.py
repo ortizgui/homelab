@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import sys
 
-from .operations import healthcheck, preflight, restore_snapshot, run_backup, run_forget, run_prune, status, unlock_repository
+from .operations import dashboard_summary, healthcheck, preflight, restore_snapshot, run_backup, run_forget, run_prune, status, unlock_repository
 
 
 def main() -> int:
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
     if action == "status":
         payload = status()
+    elif action == "summary":
+        payload = dashboard_summary()
     elif action == "healthcheck":
         payload = healthcheck()
     elif action == "preflight":

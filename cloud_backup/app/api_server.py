@@ -51,6 +51,9 @@ class ApiHandler(JsonHandler):
             if parsed.path == "/api/status":
                 self.send_json(engine_request("GET", "/engine/status"))
                 return
+            if parsed.path == "/api/summary":
+                self.send_json(engine_request("GET", "/engine/summary"))
+                return
             if parsed.path == "/api/runtime":
                 self.send_json(engine_request("GET", "/engine/runtime"))
                 return

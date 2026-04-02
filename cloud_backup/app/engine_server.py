@@ -8,6 +8,7 @@ from .configuration import load_config
 from .http_utils import JsonHandler
 from .operations import (
     browse_path,
+    dashboard_summary,
     healthcheck,
     list_logs,
     list_snapshots,
@@ -37,6 +38,9 @@ class EngineHandler(JsonHandler):
                 return
             if parsed.path == "/engine/status":
                 self.send_json(status())
+                return
+            if parsed.path == "/engine/summary":
+                self.send_json(dashboard_summary())
                 return
             if parsed.path == "/engine/runtime":
                 self.send_json(runtime_status())

@@ -18,6 +18,7 @@ from .runtime import (
     end_run,
     interrupted_run,
     json_response,
+    list_json_logs,
     run_command,
     run_command_streaming,
     update_run_progress,
@@ -163,6 +164,30 @@ def check_remote_connectivity(config: dict[str, Any]) -> dict[str, Any]:
         stdout=result.stdout,
         stderr=result.stderr,
         message="Remote reachable" if result.code == 0 else "Remote connectivity failed",
+    )
+
+
+def remote_storage_quota(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = config or load_config()
+    remote_name = cfg["provider"]["remote_name"]
+    result = run_command(
+        ["rclone", "about", f"{remote_name}:", "--json"],
+        env={"RCLONE_CONFIG": str(rclone_config_path())},
+        timeout=30,
+    )
+    quota = {}
+    if result.code == 0 and result.stdout.strip():
+        try:
+            quota = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            quota = {}
+    return json_response(
+        result.code == 0,
+        remote=remote_name,
+        quota=quota,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        message="Remote quota loaded" if result.code == 0 else "Remote quota unavailable",
     )
 
 
@@ -589,6 +614,67 @@ def list_logs(limit: int = 200) -> dict[str, Any]:
     if ops_file.exists():
         operations = [json.loads(line) for line in ops_file.read_text(encoding="utf-8").splitlines()[-limit:] if line.strip()]
     return json_response(True, files=files, operations=operations)
+
+
+def latest_backup_result(limit: int = 400) -> dict[str, Any] | None:
+    operations = list_json_logs("operations.jsonl", limit=limit)
+    latest: dict[str, Any] | None = None
+    for entry in operations:
+        if entry.get("action") == "backup" and "ok" in entry:
+            latest = entry
+    if latest is None:
+        return None
+
+    summary = None
+    for line in (latest.get("stdout") or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("message_type") == "summary":
+            summary = payload
+
+    detail = (latest.get("stderr") or "").strip()
+    if detail:
+        detail = detail.splitlines()[-1]
+    elif latest.get("stdout"):
+        detail = "Backup finalizado e registrado no log."
+    else:
+        detail = ""
+
+    return {
+        "ok": latest.get("ok"),
+        "tag": latest.get("tag"),
+        "timestamp": latest.get("timestamp"),
+        "snapshot_id": summary.get("snapshot_id") if summary else None,
+        "total_bytes_processed": summary.get("total_bytes_processed") if summary else None,
+        "total_files_processed": summary.get("total_files_processed") if summary else None,
+        "data_added": summary.get("data_added") if summary else None,
+        "detail": detail,
+    }
+
+
+def latest_preflight_result(limit: int = 200) -> dict[str, Any] | None:
+    entries = list_json_logs("preflight.jsonl", limit=limit)
+    return entries[-1] if entries else None
+
+
+def dashboard_summary() -> dict[str, Any]:
+    runtime = runtime_status()
+    quota = remote_storage_quota()
+    return json_response(
+        True,
+        current_run=runtime.get("current_run"),
+        last_successful_backup=runtime.get("last_successful_backup"),
+        latest_backup=latest_backup_result(),
+        latest_preflight=latest_preflight_result(),
+        remote_quota=quota.get("quota", {}) if quota.get("ok") else {},
+        remote_quota_ok=quota.get("ok"),
+        remote_quota_message=quota.get("message"),
+    )
 
 
 def runtime_status() -> dict[str, Any]:
