@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,7 +10,15 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.configuration import default_config
-from app.operations import build_backup_command, normalize_bandwidth_limit, recover_interrupted_backup, run_post_failure_prune
+from app.operations import (
+    build_backup_command,
+    check_repository_access,
+    normalize_bandwidth_limit,
+    parse_restic_progress_line,
+    recover_interrupted_backup,
+    run_post_failure_prune,
+    unlock_repository,
+)
 from app.runtime import CommandResult
 
 
@@ -47,6 +57,25 @@ class BackupCommandTests(unittest.TestCase):
         self.assertEqual(payload["phase"], "post-failure")
         self.assertEqual(payload["trigger_action"], "backup")
 
+    def test_parse_restic_progress_status_line(self) -> None:
+        payload = parse_restic_progress_line(
+            '{"message_type":"status","percent_done":0.42,"total_files":100,"files_done":42,"total_bytes":1000,"bytes_done":420,"current_files":["/source/raid1/documents/file.txt"],"seconds_remaining":120}'
+        )
+
+        self.assertEqual(payload["phase"], "running")
+        self.assertEqual(payload["percent_done"], 0.42)
+        self.assertEqual(payload["files_done"], 42)
+        self.assertEqual(payload["current_file"], "/source/raid1/documents/file.txt")
+
+    def test_parse_restic_progress_summary_line(self) -> None:
+        payload = parse_restic_progress_line(
+            '{"message_type":"summary","files_new":2,"files_changed":3,"files_unmodified":5,"total_files_processed":10,"total_bytes_processed":2048,"snapshot_id":"abc123"}'
+        )
+
+        self.assertEqual(payload["phase"], "finalizing")
+        self.assertEqual(payload["snapshot_id"], "abc123")
+        self.assertEqual(payload["total_files_processed"], 10)
+
     def test_recover_interrupted_backup_runs_cleanup_once(self) -> None:
         interrupted = {"action": "backup", "started_at": "2026-03-29T03:00:00+00:00", "tag": "scheduled"}
         prune_payload = {"ok": True, "action": "prune", "phase": "post-failure", "trigger_action": "backup"}
@@ -65,6 +94,52 @@ class BackupCommandTests(unittest.TestCase):
         self.assertEqual(payload["action"], "recovery")
         self.assertEqual(payload["phase"], "startup-prune")
         self.assertEqual(payload["interrupted_run"], interrupted)
+
+    def test_repository_access_timeout_is_reported_without_traceback(self) -> None:
+        config = default_config()
+        timeout_result = CommandResult(
+            code=124,
+            stdout="",
+            stderr="Command timed out after 30s: restic cat config",
+            command=["restic", "cat", "config"],
+        )
+
+        with patch("app.operations.run_command", side_effect=[timeout_result, timeout_result]):
+            payload = check_repository_access(config)
+
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["initialized"])
+        self.assertIn("timed out", payload["stderr"].lower())
+
+    def test_unlock_repository_uses_restic_env_and_logs(self) -> None:
+        result = CommandResult(code=0, stdout="unlocked", stderr="", command=["restic", "unlock", "--remove-all"])
+
+        with patch("app.operations.load_config", return_value=default_config()):
+            with patch("app.operations.run_command", return_value=result) as run_command_mock:
+                with patch("app.operations.append_log") as append_log_mock:
+                    payload = unlock_repository()
+
+        run_command_mock.assert_called_once()
+        append_log_mock.assert_called_once()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "unlock")
+
+    def test_interrupted_run_ignores_active_pid(self) -> None:
+        from app import runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "current-run.json"
+            state_path.write_text(
+                json.dumps({"action": "backup", "started_at": "2026-03-29T03:00:00+00:00", "tag": "scheduled", "pid": 321}),
+                encoding="utf-8",
+            )
+
+            with patch("app.runtime.current_run_state_file", return_value=state_path):
+                with patch("app.runtime.os.kill", return_value=None) as kill_mock:
+                    payload = runtime.interrupted_run()
+
+        kill_mock.assert_called_once_with(321, 0)
+        self.assertIsNone(payload)
 
 
 if __name__ == "__main__":

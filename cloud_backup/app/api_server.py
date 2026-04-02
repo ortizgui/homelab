@@ -10,6 +10,7 @@ from http.server import ThreadingHTTPServer
 
 from .configuration import coerce_import_config, export_bundle, load_config, save_config, validate_config
 from .http_utils import JsonHandler
+from .operations import cached_dashboard_summary, load_dashboard_cache
 from .runtime import json_response
 
 
@@ -50,6 +51,20 @@ class ApiHandler(JsonHandler):
                 return
             if parsed.path == "/api/status":
                 self.send_json(engine_request("GET", "/engine/status"))
+                return
+            if parsed.path == "/api/summary":
+                self.send_json(cached_dashboard_summary())
+                return
+            if parsed.path == "/api/remote-quota":
+                cache = load_dashboard_cache().get("remote_quota")
+                if cache:
+                    payload = json_response(True, **cache)
+                else:
+                    payload = json_response(False, message="Remote quota cache unavailable", quota={})
+                self.send_json(payload)
+                return
+            if parsed.path == "/api/runtime":
+                self.send_json(engine_request("GET", "/engine/runtime"))
                 return
             if parsed.path == "/api/preflight":
                 self.send_json(engine_request("GET", "/engine/preflight"))

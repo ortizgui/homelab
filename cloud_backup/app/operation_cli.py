@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import sys
 
-from .operations import healthcheck, preflight, restore_snapshot, run_backup, run_forget, run_prune, status
+from .operations import dashboard_summary, healthcheck, preflight, remote_storage_quota, restore_snapshot, run_backup, run_forget, run_prune, status, unlock_repository
 
 
 def main() -> int:
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
     if action == "status":
         payload = status()
+    elif action == "summary":
+        payload = dashboard_summary()
+    elif action == "remote-quota":
+        payload = remote_storage_quota()
     elif action == "healthcheck":
         payload = healthcheck()
     elif action == "preflight":
@@ -21,6 +25,8 @@ def main() -> int:
         payload = run_forget()
     elif action == "prune":
         payload = run_prune()
+    elif action == "unlock":
+        payload = unlock_repository()
     elif action == "restore":
         if len(sys.argv) < 4:
             raise SystemExit("usage: restore <snapshot_id> <target> [include_path]")

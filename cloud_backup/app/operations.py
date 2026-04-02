@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 import os
@@ -10,7 +11,21 @@ from pathlib import Path
 from typing import Any
 
 from .configuration import load_config, log_dir, rclone_config_path, state_dir
-from .runtime import _RUN_LOCK, append_log, begin_run, current_run, end_run, interrupted_run, json_response, run_command, utc_now
+from .runtime import (
+    _RUN_LOCK,
+    append_log,
+    begin_run,
+    current_run,
+    end_run,
+    interrupted_run,
+    json_response,
+    list_json_logs,
+    read_persisted_run,
+    run_command,
+    run_command_streaming,
+    update_run_progress,
+    utc_now,
+)
 
 
 def build_restic_env(config: dict[str, Any]) -> dict[str, str]:
@@ -21,6 +36,61 @@ def build_restic_env(config: dict[str, Any]) -> dict[str, str]:
         "RCLONE_CONFIG": str(rclone_config_path()),
         "RESTIC_CACHE_DIR": "/data/restic-cache",
     }
+
+
+def dashboard_cache_path() -> Path:
+    return state_dir() / "dashboard-cache.json"
+
+
+def empty_dashboard_cache() -> dict[str, Any]:
+    return {
+        "latest_backup": None,
+        "latest_preflight": None,
+        "remote_quota": None,
+        "last_action": None,
+        "updated_at": None,
+    }
+
+
+def load_dashboard_cache() -> dict[str, Any]:
+    path = dashboard_cache_path()
+    if not path.exists():
+        return empty_dashboard_cache()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return empty_dashboard_cache()
+    merged = empty_dashboard_cache()
+    for key, value in payload.items():
+        merged[key] = value
+    return merged
+
+
+def save_dashboard_cache(cache: dict[str, Any]) -> dict[str, Any]:
+    path = dashboard_cache_path()
+    payload = copy.deepcopy(cache)
+    payload["updated_at"] = utc_now()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def update_dashboard_cache(**changes: Any) -> dict[str, Any]:
+    cache = load_dashboard_cache()
+    for key, value in changes.items():
+        cache[key] = value
+    return save_dashboard_cache(cache)
+
+
+def mark_dashboard_action(action: str, phase: str, **extra: Any) -> dict[str, Any]:
+    return update_dashboard_cache(
+        last_action={
+            "action": action,
+            "phase": phase,
+            "timestamp": utc_now(),
+            **extra,
+        }
+    )
 
 
 def normalize_bandwidth_limit(value: str) -> list[str]:
@@ -154,6 +224,54 @@ def check_remote_connectivity(config: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def remote_storage_quota(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = config or load_config()
+    remote_name = cfg["provider"]["remote_name"]
+    previous = load_dashboard_cache().get("remote_quota")
+    result = run_command(
+        ["rclone", "about", f"{remote_name}:", "--json"],
+        env={"RCLONE_CONFIG": str(rclone_config_path())},
+        timeout=30,
+    )
+    quota = {}
+    if result.code == 0 and result.stdout.strip():
+        try:
+            quota = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            quota = {}
+    payload = json_response(
+        result.code == 0,
+        remote=remote_name,
+        quota=quota,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        message="Remote quota loaded" if result.code == 0 else "Remote quota unavailable",
+    )
+    cached_quota = {
+        "ok": payload["ok"],
+        "remote": remote_name,
+        "quota": quota,
+        "message": payload["message"],
+        "timestamp": payload["timestamp"],
+        "stale": False,
+    }
+    if payload["ok"] or load_dashboard_cache().get("remote_quota") is None:
+        update_dashboard_cache(remote_quota=cached_quota)
+    elif previous:
+        stale_quota = copy.deepcopy(previous)
+        stale_quota["stale"] = True
+        stale_quota["message"] = payload["message"]
+        update_dashboard_cache(remote_quota=stale_quota)
+        return json_response(
+            True,
+            remote=stale_quota.get("remote", remote_name),
+            quota=stale_quota.get("quota", {}),
+            message=stale_quota.get("message", "Remote quota cache loaded"),
+            stale=True,
+        )
+    return payload
+
+
 def check_repository_access(config: dict[str, Any]) -> dict[str, Any]:
     env = build_restic_env(config)
     config_result = run_command(["restic", "cat", "config"], env=env, timeout=30)
@@ -256,6 +374,7 @@ def os_access_read(path: Path) -> bool:
 
 
 def preflight(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    mark_dashboard_action("preflight", "started")
     cfg = config or load_config()
     mount_results = check_mounts(cfg)
     source_results = check_sources(cfg)
@@ -286,6 +405,8 @@ def preflight(config: dict[str, Any] | None = None) -> dict[str, Any]:
         disk_health_result=disk_health_result,
     )
     append_log("preflight.jsonl", report)
+    update_dashboard_cache(latest_preflight=report)
+    mark_dashboard_action("preflight", "completed", ok=report["ok"])
     return report
 
 
@@ -309,6 +430,52 @@ def build_backup_command(config: dict[str, Any], tag: str) -> list[str]:
     return command
 
 
+def parse_restic_progress_line(line: str) -> dict[str, Any] | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+    message_type = payload.get("message_type")
+    if message_type == "status":
+        current_files = payload.get("current_files") or []
+        return {
+            "phase": "running",
+            "message_type": message_type,
+            "percent_done": payload.get("percent_done"),
+            "seconds_elapsed": payload.get("seconds_elapsed"),
+            "seconds_remaining": payload.get("seconds_remaining"),
+            "total_files": payload.get("total_files"),
+            "files_done": payload.get("files_done"),
+            "total_bytes": payload.get("total_bytes"),
+            "bytes_done": payload.get("bytes_done"),
+            "current_files": current_files,
+            "current_file": current_files[0] if current_files else None,
+        }
+    if message_type == "summary":
+        return {
+            "phase": "finalizing",
+            "message_type": message_type,
+            "files_new": payload.get("files_new"),
+            "files_changed": payload.get("files_changed"),
+            "files_unmodified": payload.get("files_unmodified"),
+            "dirs_new": payload.get("dirs_new"),
+            "dirs_changed": payload.get("dirs_changed"),
+            "dirs_unmodified": payload.get("dirs_unmodified"),
+            "data_blobs": payload.get("data_blobs"),
+            "tree_blobs": payload.get("tree_blobs"),
+            "data_added": payload.get("data_added"),
+            "total_files_processed": payload.get("total_files_processed"),
+            "total_bytes_processed": payload.get("total_bytes_processed"),
+            "total_duration": payload.get("total_duration"),
+            "snapshot_id": payload.get("snapshot_id"),
+        }
+    return None
+
+
 def run_post_failure_prune(config: dict[str, Any], trigger_action: str) -> dict[str, Any]:
     command = ["restic", "prune", "--json"]
     result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 6)
@@ -322,6 +489,26 @@ def run_post_failure_prune(config: dict[str, Any], trigger_action: str) -> dict[
         stderr=result.stderr,
     )
     append_log("operations.jsonl", payload)
+    mark_dashboard_action("prune", "completed", ok=payload["ok"], trigger_action=trigger_action)
+    return payload
+
+
+def unlock_repository(remove_all: bool = True) -> dict[str, Any]:
+    mark_dashboard_action("unlock", "started", remove_all=remove_all)
+    config = load_config()
+    command = ["restic", "unlock"]
+    if remove_all:
+        command.append("--remove-all")
+    result = run_command(command, env=build_restic_env(config), timeout=120)
+    payload = json_response(
+        result.code == 0,
+        action="unlock",
+        command=command,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
+    append_log("operations.jsonl", payload)
+    mark_dashboard_action("unlock", "completed", ok=payload["ok"], remove_all=remove_all)
     return payload
 
 
@@ -340,6 +527,7 @@ def recover_interrupted_backup() -> dict[str, Any] | None:
         prune=payload,
     )
     append_log("operations.jsonl", recovery_payload)
+    mark_dashboard_action("recovery", "completed", ok=recovery_payload["ok"])
     end_run()
     return recovery_payload
 
@@ -357,6 +545,7 @@ def run_backup(tag: str = "manual") -> dict[str, Any]:
         return json_response(False, message=f"{active_run['action']} already running", current_run=active_run)
 
     with _RUN_LOCK:
+        mark_dashboard_action("backup", "started", tag=tag)
         try:
             repository_status = check_repository_access(config)
             if not repository_status["ok"] and not repository_status.get("initialized", False):
@@ -376,15 +565,41 @@ def run_backup(tag: str = "manual") -> dict[str, Any]:
                     command=command,
                 ),
             )
-            result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 12)
+            update_run_progress(
+                {
+                    "phase": "starting",
+                    "message_type": "status",
+                    "percent_done": 0,
+                    "files_done": 0,
+                    "bytes_done": 0,
+                    "current_file": None,
+                    "current_files": [],
+                }
+            )
+
+            def handle_backup_stdout(line: str) -> None:
+                progress = parse_restic_progress_line(line)
+                if progress is not None:
+                    update_run_progress(progress)
+
+            result = run_command_streaming(
+                command,
+                env=build_restic_env(config),
+                timeout=60 * 60 * 12,
+                on_stdout_line=handle_backup_stdout,
+            )
             payload = json_response(result.code == 0, action="backup", tag=tag, command=command, stdout=result.stdout, stderr=result.stderr)
             if result.code == 0:
                 (state_dir() / "last_successful_backup.txt").write_text(utc_now(), encoding="utf-8")
+                update_dashboard_cache(latest_backup=latest_backup_result())
+                remote_storage_quota(config)
                 notify(config, "success", "Backup concluido", f"Tag: {tag}")
             else:
                 run_post_failure_prune(config, "backup")
                 notify(config, "error", "Backup falhou", result.stderr[-800:])
             append_log("operations.jsonl", payload)
+            update_dashboard_cache(latest_backup=latest_backup_result())
+            mark_dashboard_action("backup", "completed", ok=payload["ok"], tag=tag)
             return payload
         finally:
             end_run()
@@ -417,9 +632,12 @@ def run_forget() -> dict[str, Any]:
 
     try:
         with _RUN_LOCK:
+            mark_dashboard_action("forget", "started")
             result = run_command(command, env=build_restic_env(config), timeout=60 * 30)
         payload = json_response(result.code == 0, action="forget", command=command, stdout=result.stdout, stderr=result.stderr)
         append_log("operations.jsonl", payload)
+        remote_storage_quota(config)
+        mark_dashboard_action("forget", "completed", ok=payload["ok"])
         return payload
     finally:
         end_run()
@@ -439,9 +657,12 @@ def run_prune() -> dict[str, Any]:
 
     try:
         with _RUN_LOCK:
+            mark_dashboard_action("prune", "started")
             result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 6)
         payload = json_response(result.code == 0, action="prune", command=command, stdout=result.stdout, stderr=result.stderr)
         append_log("operations.jsonl", payload)
+        remote_storage_quota(config)
+        mark_dashboard_action("prune", "completed", ok=payload["ok"])
         return payload
     finally:
         end_run()
@@ -492,6 +713,92 @@ def list_logs(limit: int = 200) -> dict[str, Any]:
     if ops_file.exists():
         operations = [json.loads(line) for line in ops_file.read_text(encoding="utf-8").splitlines()[-limit:] if line.strip()]
     return json_response(True, files=files, operations=operations)
+
+
+def latest_backup_result(limit: int = 400) -> dict[str, Any] | None:
+    operations = list_json_logs("operations.jsonl", limit=limit)
+    latest: dict[str, Any] | None = None
+    for entry in operations:
+        if entry.get("action") == "backup" and "ok" in entry:
+            latest = entry
+    if latest is None:
+        return None
+
+    summary = None
+    for line in (latest.get("stdout") or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("message_type") == "summary":
+            summary = payload
+
+    detail = (latest.get("stderr") or "").strip()
+    if detail:
+        detail = detail.splitlines()[-1]
+    elif latest.get("stdout"):
+        detail = "Backup finalizado e registrado no log."
+    else:
+        detail = ""
+
+    return {
+        "ok": latest.get("ok"),
+        "tag": latest.get("tag"),
+        "timestamp": latest.get("timestamp"),
+        "snapshot_id": summary.get("snapshot_id") if summary else None,
+        "total_bytes_processed": summary.get("total_bytes_processed") if summary else None,
+        "total_files_processed": summary.get("total_files_processed") if summary else None,
+        "data_added": summary.get("data_added") if summary else None,
+        "detail": detail,
+    }
+
+
+def latest_preflight_result(limit: int = 200) -> dict[str, Any] | None:
+    entries = list_json_logs("preflight.jsonl", limit=limit)
+    return entries[-1] if entries else None
+
+
+def dashboard_summary() -> dict[str, Any]:
+    runtime = runtime_status()
+    cache = load_dashboard_cache()
+    return json_response(
+        True,
+        current_run=runtime.get("current_run"),
+        last_successful_backup=runtime.get("last_successful_backup"),
+        latest_backup=cache.get("latest_backup") or latest_backup_result(),
+        latest_preflight=cache.get("latest_preflight") or latest_preflight_result(),
+        last_action=cache.get("last_action"),
+        cache_updated_at=cache.get("updated_at"),
+    )
+
+
+def cached_dashboard_summary() -> dict[str, Any]:
+    cache = load_dashboard_cache()
+    last_backup_file = state_dir() / "last_successful_backup.txt"
+    last_backup = last_backup_file.read_text(encoding="utf-8").strip() if last_backup_file.exists() else None
+    return json_response(
+        True,
+        current_run=read_persisted_run(),
+        last_successful_backup=last_backup,
+        latest_backup=cache.get("latest_backup"),
+        latest_preflight=cache.get("latest_preflight"),
+        last_action=cache.get("last_action"),
+        cache_updated_at=cache.get("updated_at"),
+        remote_quota=cache.get("remote_quota", {}),
+    )
+
+
+def runtime_status() -> dict[str, Any]:
+    last_backup_file = state_dir() / "last_successful_backup.txt"
+    last_backup = last_backup_file.read_text(encoding="utf-8").strip() if last_backup_file.exists() else None
+    return json_response(
+        True,
+        current_run=current_run(),
+        last_successful_backup=last_backup,
+    )
 
 
 def status() -> dict[str, Any]:

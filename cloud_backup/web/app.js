@@ -1,15 +1,65 @@
+const POLL_INTERVAL_IDLE_MS = 15000;
+const POLL_INTERVAL_ACTIVE_MS = 3000;
+const FULL_REFRESH_INTERVAL_IDLE_MS = 45000;
+const FULL_REFRESH_INTERVAL_ACTIVE_MS = 9000;
+const BACKUP_REQUEST_TIMEOUT_MS = 5000;
+
 const state = {
   config: null,
+  remoteQuota: null,
+  summary: null,
   status: null,
+  runtime: null,
+  logs: [],
+  lastUpdated: {
+    remoteQuota: null,
+    summary: null,
+    status: null,
+    logs: null,
+    runtime: null,
+  },
+  sync: {
+    remoteQuota: "idle",
+    summary: "idle",
+    runtime: "idle",
+    status: "idle",
+    logs: "idle",
+  },
+  requestIds: {
+    remoteQuota: 0,
+    summary: 0,
+    runtime: 0,
+    status: 0,
+    logs: 0,
+  },
+  pollHandle: null,
+  lastFullRefreshAt: 0,
 };
-let statusPollHandle = null;
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const text = await response.text();
+  const { timeoutMs = 30000, headers = {}, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timeoutHandle = window.setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  let text;
+  try {
+    response = await fetch(path, {
+      ...fetchOptions,
+      headers: {
+        ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+        ...headers,
+      },
+      signal: controller.signal,
+    });
+    text = await response.text();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Request timed out");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutHandle);
+  }
   let payload;
   try {
     payload = text ? JSON.parse(text) : {};
@@ -39,9 +89,112 @@ function formatTimestamp(value) {
   return date.toLocaleString();
 }
 
+function formatPercent(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return null;
+  }
+  return `${Math.max(0, Math.min(100, value * 100)).toFixed(1)}%`;
+}
+
+function formatBytes(value) {
+  if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+    return null;
+  }
+  if (value === 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const scaled = value / (1024 ** exponent);
+  return `${scaled.toFixed(scaled >= 100 || exponent === 0 ? 0 : scaled >= 10 ? 1 : 2)} ${units[exponent]}`;
+}
+
+function formatDuration(seconds) {
+  if (typeof seconds !== "number" || Number.isNaN(seconds) || seconds < 0) {
+    return null;
+  }
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.round(seconds % 60);
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${secs}s`;
+  }
+  return `${secs}s`;
+}
+
+function hasActiveRun() {
+  return Boolean(state.runtime?.current_run || state.summary?.current_run || state.status?.current_run);
+}
+
+function setSyncState(key, nextState) {
+  state.sync[key] = nextState;
+  renderSyncState();
+  renderCardLoadingState();
+}
+
+function renderSyncState() {
+  const node = document.getElementById("sync-status");
+  const detail = document.getElementById("sync-updated");
+  const hardError = state.sync.summary === "error" || state.sync.runtime === "error";
+  const softError = !hardError && (state.sync.status === "error" || state.sync.remoteQuota === "error" || state.sync.logs === "error");
+  const currentStates = Object.values(state.sync);
+
+  if (hardError) {
+    node.textContent = "Sync degraded";
+    node.className = "sync-pill sync-error";
+  } else if (softError) {
+    node.textContent = "Partial sync";
+    node.className = "sync-pill sync-warn";
+  } else if (hasActiveRun() || currentStates.includes("loading")) {
+    node.textContent = hasActiveRun() ? "Live monitoring" : "Syncing";
+    node.className = "sync-pill sync-active";
+  } else {
+    node.textContent = "In sync";
+    node.className = "sync-pill";
+  }
+
+  const latestTimestamp = [state.lastUpdated.runtime, state.lastUpdated.remoteQuota, state.lastUpdated.summary, state.lastUpdated.status, state.lastUpdated.logs]
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  detail.textContent = latestTimestamp
+    ? `Last update: ${formatTimestamp(latestTimestamp)}`
+    : "The dashboard is connecting to the backend.";
+}
+
+function setCardLoading(cardId, isLoading) {
+  const node = document.getElementById(cardId);
+  if (!node) {
+    return;
+  }
+  node.classList.toggle("loading-card", isLoading);
+}
+
+function renderCardLoadingState() {
+  const summaryPending = state.sync.summary === "loading" && !state.summary;
+  const quotaPending = state.sync.remoteQuota === "loading" && !state.remoteQuota;
+  const statusPending = state.sync.status === "loading" && !state.status;
+  const logsPending = state.sync.logs === "loading" && state.logs.length === 0;
+  const runtimePending = state.sync.runtime === "loading" && !state.runtime;
+  const progressPending = runtimePending && !hasActiveRun();
+
+  setCardLoading("card-safety-gate", summaryPending && statusPending);
+  setCardLoading("card-snapshots", summaryPending && statusPending);
+  setCardLoading("card-repository-usage", quotaPending);
+  setCardLoading("card-backup-progress", progressPending);
+  setCardLoading("card-last-backup-result", summaryPending && logsPending);
+  setCardLoading("card-blocked-reasons", summaryPending && statusPending);
+}
+
 function renderRunIndicator() {
   const node = document.getElementById("run-indicator");
-  const currentRun = state.status?.current_run;
+  const currentRun = state.runtime?.current_run || state.summary?.current_run || state.status?.current_run;
   if (!currentRun) {
     node.textContent = "";
     node.className = "run-indicator hidden";
@@ -50,8 +203,98 @@ function renderRunIndicator() {
   const actionLabel = currentRun.action[0].toUpperCase() + currentRun.action.slice(1);
   const startedAt = formatTimestamp(currentRun.started_at);
   const tag = currentRun.tag ? ` Tag: ${currentRun.tag}.` : "";
-  node.textContent = `${actionLabel} running now.${tag} Started at ${startedAt}.`;
+  const percent = currentRun.action === "backup" ? formatPercent(currentRun.progress?.percent_done) : null;
+  const percentLabel = percent ? ` Progress: ${percent}.` : "";
+  node.textContent = `${actionLabel} running now.${tag}${percentLabel} Started at ${startedAt}.`;
   node.className = "run-indicator";
+}
+
+function renderBackupProgress(currentRun) {
+  const percentNode = document.getElementById("backup-progress-percent");
+  const barNode = document.getElementById("backup-progress-bar");
+  const summaryNode = document.getElementById("backup-progress-summary");
+  const currentNode = document.getElementById("backup-progress-current");
+
+  if (!currentRun || currentRun.action !== "backup") {
+    percentNode.textContent = "Idle";
+    barNode.style.width = "0%";
+    summaryNode.textContent = "No backup in progress.";
+    currentNode.textContent = "";
+    return;
+  }
+
+  const progress = currentRun.progress || {};
+  const percent = formatPercent(progress.percent_done);
+  percentNode.textContent = percent || "Running";
+  barNode.style.width = percent || "8%";
+
+  const summaryParts = [];
+  if (typeof progress.files_done === "number" && typeof progress.total_files === "number") {
+    summaryParts.push(`${progress.files_done} / ${progress.total_files} files`);
+  }
+  const bytesDone = formatBytes(progress.bytes_done);
+  const totalBytes = formatBytes(progress.total_bytes);
+  if (bytesDone && totalBytes) {
+    summaryParts.push(`${bytesDone} / ${totalBytes}`);
+  } else if (bytesDone) {
+    summaryParts.push(bytesDone);
+  }
+  const remaining = formatDuration(progress.seconds_remaining);
+  if (remaining) {
+    summaryParts.push(`ETA ${remaining}`);
+  }
+  summaryNode.textContent = summaryParts.join(" | ") || "Collecting progress from restic.";
+  currentNode.textContent = progress.current_file ? `Current file: ${progress.current_file}` : "";
+}
+
+function findLatestBackupLog() {
+  if (state.summary?.latest_backup) {
+    return state.summary.latest_backup;
+  }
+  return state.logs
+    .slice()
+    .reverse()
+    .find((entry) => entry.action === "backup" && Object.prototype.hasOwnProperty.call(entry, "ok"));
+}
+
+function renderLatestBackupResult() {
+  const resultNode = document.getElementById("last-backup-result");
+  const summaryNode = document.getElementById("last-backup-result-summary");
+  const detailNode = document.getElementById("last-backup-result-detail");
+  const currentRun = state.runtime?.current_run || state.summary?.current_run || state.status?.current_run;
+
+  if (currentRun?.action === "backup") {
+    const progress = currentRun.progress || {};
+    const percent = formatPercent(progress.percent_done);
+    resultNode.textContent = percent || "Running";
+    resultNode.className = "metric metric-small metric-accent";
+    summaryNode.textContent = `Backup in progress since ${formatTimestamp(currentRun.started_at)}.`;
+    detailNode.textContent = progress.current_file ? `Current file: ${progress.current_file}` : "Collecting progress from restic.";
+    return;
+  }
+
+  const latest = findLatestBackupLog();
+  if (!latest) {
+    resultNode.textContent = "Unknown";
+    resultNode.className = "metric metric-small";
+    summaryNode.textContent = "No backup recorded yet.";
+    detailNode.textContent = "";
+    return;
+  }
+
+  const ok = latest.ok === true;
+  resultNode.textContent = ok ? "Success" : "Failed";
+  resultNode.className = `metric metric-small ${ok ? "metric-success" : "metric-danger"}`;
+  const tag = latest.tag ? ` Tag: ${latest.tag}.` : "";
+  summaryNode.textContent = `${ok ? "Last backup finished successfully." : "Last backup finished with errors."}${tag} ${formatTimestamp(latest.timestamp)}`.trim();
+  const detail = (latest.detail || "").trim();
+  if (detail) {
+    detailNode.textContent = detail;
+  } else {
+    detailNode.textContent = state.runtime?.last_successful_backup || state.summary?.last_successful_backup || state.status?.last_successful_backup
+      ? `Last successful backup: ${formatTimestamp(state.runtime?.last_successful_backup || state.summary?.last_successful_backup || state.status?.last_successful_backup)}`
+      : "";
+  }
 }
 
 function switchView(nextView) {
@@ -147,15 +390,29 @@ function renderConfig() {
 }
 
 function renderStatus() {
-  const payload = state.status;
-  const currentRun = payload.current_run;
+  const payload = state.status || {};
+  const summary = state.summary || {};
+  const preflight = payload.preflight || summary.latest_preflight || null;
+  const currentRun = state.runtime?.current_run || summary.current_run || payload.current_run;
   renderRunIndicator();
-  document.getElementById("status-gate").textContent = payload.preflight.ok ? "PASS" : "BLOCKED";
-  document.getElementById("status-failures").textContent = (payload.preflight.failures || []).join("\n") || "No blocking failures.";
-  document.getElementById("snapshot-count").textContent = String((payload.snapshots || []).length);
-  document.getElementById("last-backup").textContent = payload.last_successful_backup || "No successful backup yet.";
-  document.getElementById("repo-usage").textContent = payload.stats?.total_size || "N/A";
-  document.getElementById("repo-files").textContent = JSON.stringify(payload.stats || {}, null, 2);
+  renderBackupProgress(currentRun);
+  renderLatestBackupResult();
+  document.getElementById("status-gate").textContent = preflight ? (preflight.ok ? "PASS" : "BLOCKED") : "UNAVAILABLE";
+  document.getElementById("status-failures").textContent = preflight
+    ? ((preflight.failures || []).join("\n") || "No blocking failures.")
+    : "Waiting for the latest preflight result.";
+  document.getElementById("snapshot-count").textContent = Array.isArray(payload.snapshots)
+    ? String(payload.snapshots.length)
+    : (summary.latest_backup?.snapshot_id ? "1+" : "-");
+  document.getElementById("last-backup").textContent = state.runtime?.last_successful_backup || summary.last_successful_backup || payload.last_successful_backup || "No successful backup yet.";
+  const quota = state.remoteQuota?.quota || {};
+  const used = formatBytes(quota.used);
+  const total = formatBytes(quota.total);
+  const free = formatBytes(quota.free);
+  document.getElementById("repo-usage").textContent = used && total ? `${used} / ${total}` : "N/A";
+  document.getElementById("repo-files").textContent = free
+    ? `Free: ${free}`
+    : (state.remoteQuota?.ok === false ? (state.remoteQuota.message || "Remote quota unavailable.") : "Waiting for remote quota.");
   const runButton = document.getElementById("run-backup");
   if (currentRun?.action === "backup") {
     runButton.disabled = true;
@@ -164,52 +421,235 @@ function renderStatus() {
     runButton.disabled = false;
     runButton.textContent = "Run backup";
   }
-  document.getElementById("preflight-list").innerHTML = "";
-  (payload.preflight.source_results || []).forEach((entry) => {
+  const preflightList = document.getElementById("preflight-list");
+  preflightList.innerHTML = "";
+  (preflight?.source_results || []).forEach((entry) => {
     const li = document.createElement("li");
     li.textContent = `${entry.path}: exists=${entry.exists} readable=${entry.readable} non_empty=${entry.non_empty}`;
-    document.getElementById("preflight-list").appendChild(li);
+    preflightList.appendChild(li);
   });
+  if (!preflightList.children.length) {
+    const li = document.createElement("li");
+    li.textContent = preflight ? "No blocked sources." : "Detailed source checks will appear after a successful status refresh.";
+    preflightList.appendChild(li);
+  }
   document.getElementById("restore-snapshots").textContent = JSON.stringify(payload.snapshots || [], null, 2);
 }
 
-async function loadAll() {
-  const [configPayload, statusPayload, logsPayload] = await Promise.all([
-    api("/api/config"),
-    api("/api/status"),
-    api("/api/logs"),
-  ]);
-  state.config = configPayload.config;
-  state.status = statusPayload;
+function renderLogs() {
+  const output = document.getElementById("logs-output");
+  if (!state.logs.length) {
+    output.textContent = "No operations logged yet.";
+    return;
+  }
+
+  output.textContent = state.logs
+    .slice()
+    .reverse()
+    .map((entry) => {
+      const timestamp = formatTimestamp(entry.timestamp);
+      const action = entry.action || entry.phase || "event";
+      const status = entry.ok === true ? "OK" : entry.ok === false ? "ERROR" : "INFO";
+      const summary = entry.message || entry.tag || entry.snapshot_id || "";
+      return [timestamp, status, action, summary].filter(Boolean).join(" | ");
+    })
+    .join("\n");
+}
+
+async function loadConfig() {
+  const payload = await api("/api/config");
+  state.config = payload.config;
   renderConfig();
-  renderStatus();
-  document.getElementById("logs-output").textContent = JSON.stringify(logsPayload.operations || [], null, 2);
+}
+
+async function loadRuntime() {
+  const requestId = ++state.requestIds.runtime;
+  setSyncState("runtime", "loading");
+  try {
+    const payload = await api("/api/runtime", { timeoutMs: 10000 });
+    if (requestId !== state.requestIds.runtime) {
+      return;
+    }
+    state.runtime = payload;
+    state.lastUpdated.runtime = payload.timestamp;
+    setSyncState("runtime", "idle");
+    renderStatus();
+  } catch (error) {
+    if (requestId === state.requestIds.runtime) {
+      setSyncState("runtime", "error");
+    }
+    throw error;
+  }
+}
+
+async function loadSummary() {
+  const requestId = ++state.requestIds.summary;
+  setSyncState("summary", "loading");
+  try {
+    const payload = await api("/api/summary", { timeoutMs: 15000 });
+    if (requestId !== state.requestIds.summary) {
+      return;
+    }
+    state.summary = payload;
+    state.lastUpdated.summary = payload.timestamp;
+    setSyncState("summary", "idle");
+    renderStatus();
+  } catch (error) {
+    if (requestId === state.requestIds.summary) {
+      setSyncState("summary", "error");
+    }
+    throw error;
+  }
+}
+
+async function loadRemoteQuota() {
+  const requestId = ++state.requestIds.remoteQuota;
+  setSyncState("remoteQuota", "loading");
+  try {
+    const payload = await api("/api/remote-quota", { timeoutMs: 15000 });
+    if (requestId !== state.requestIds.remoteQuota) {
+      return;
+    }
+    state.remoteQuota = payload;
+    state.lastUpdated.remoteQuota = payload.timestamp;
+    setSyncState("remoteQuota", "idle");
+    renderStatus();
+  } catch (error) {
+    if (requestId === state.requestIds.remoteQuota) {
+      state.remoteQuota = {
+        ok: false,
+        message: error.message,
+        quota: {},
+      };
+      setSyncState("remoteQuota", "error");
+      renderStatus();
+    }
+    throw error;
+  }
+}
+
+async function loadStatus() {
+  const requestId = ++state.requestIds.status;
+  setSyncState("status", "loading");
+  try {
+    const payload = await api("/api/status", { timeoutMs: 30000 });
+    if (requestId !== state.requestIds.status) {
+      return;
+    }
+    state.status = payload;
+    state.lastUpdated.status = payload.timestamp;
+    state.lastFullRefreshAt = Date.now();
+    setSyncState("status", "idle");
+    renderStatus();
+  } catch (error) {
+    if (requestId === state.requestIds.status) {
+      setSyncState("status", "error");
+    }
+    throw error;
+  }
+}
+
+async function loadLogs() {
+  const requestId = ++state.requestIds.logs;
+  setSyncState("logs", "loading");
+  try {
+    const payload = await api("/api/logs", { timeoutMs: 15000 });
+    if (requestId !== state.requestIds.logs) {
+      return;
+    }
+    state.logs = payload.operations || [];
+    state.lastUpdated.logs = payload.timestamp;
+    setSyncState("logs", "idle");
+    renderLogs();
+    renderLatestBackupResult();
+  } catch (error) {
+    if (requestId === state.requestIds.logs) {
+      setSyncState("logs", "error");
+    }
+    throw error;
+  }
+}
+
+async function loadAll({ includeConfig = true } = {}) {
+  const tasks = [
+    loadRemoteQuota(),
+    loadSummary(),
+    loadRuntime(),
+    loadLogs(),
+  ];
+  if (includeConfig) {
+    tasks.push(loadConfig());
+  }
+  const results = await Promise.allSettled(tasks);
+  if (results.every((result) => result.status === "rejected")) {
+    throw results[0].reason;
+  }
 }
 
 async function refreshStatus() {
-  state.status = await api("/api/status");
+  await Promise.allSettled([loadRemoteQuota(), loadSummary(), loadRuntime()]);
+}
+
+function shouldRunFullRefresh() {
+  const interval = hasActiveRun() ? FULL_REFRESH_INTERVAL_ACTIVE_MS : FULL_REFRESH_INTERVAL_IDLE_MS;
+  return Date.now() - state.lastFullRefreshAt >= interval;
+}
+
+function schedulePolling() {
+  window.clearTimeout(state.pollHandle);
+  state.pollHandle = window.setTimeout(async () => {
+    try {
+      await loadRuntime();
+      if (shouldRunFullRefresh()) {
+        await Promise.allSettled([loadRemoteQuota(), loadSummary(), loadLogs()]);
+      }
+    } finally {
+      schedulePolling();
+    }
+  }, hasActiveRun() ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS);
+}
+
+function applyOptimisticBackupState(tag) {
+  state.runtime = {
+    ok: true,
+    timestamp: new Date().toISOString(),
+    current_run: {
+      action: "backup",
+      started_at: new Date().toISOString(),
+      tag,
+      progress: {
+        phase: "starting",
+        percent_done: 0,
+        files_done: 0,
+        bytes_done: 0,
+        current_file: null,
+        current_files: [],
+      },
+    },
+    last_successful_backup: state.runtime?.last_successful_backup || state.summary?.last_successful_backup || state.status?.last_successful_backup || null,
+  };
   renderStatus();
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  renderCardLoadingState();
   document.querySelectorAll(".sidebar button[data-view]").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.view));
   });
 
   document.getElementById("reload-status").addEventListener("click", async () => {
-    await loadAll();
+    await Promise.allSettled([loadAll({ includeConfig: false }), loadStatus()]);
     flash("Status reloaded.");
   });
 
   document.getElementById("run-preflight").addEventListener("click", async () => {
     const payload = await api("/api/preflight");
     flash(payload.ok ? "Preflight passed." : `Preflight blocked: ${payload.failures.join(", ")}`, payload.ok ? "info" : "error");
-    state.status = await api("/api/status");
-    renderStatus();
+    await refreshStatus();
   });
 
   document.getElementById("run-backup").addEventListener("click", async () => {
-    if (state.status?.current_run?.action === "backup") {
+    if (hasActiveRun() && (state.runtime?.current_run || state.summary?.current_run || state.status?.current_run)?.action === "backup") {
       flash("A backup is already running.", "error");
       return;
     }
@@ -218,24 +658,35 @@ document.addEventListener("DOMContentLoaded", async () => {
     button.disabled = true;
     button.textContent = "Backup running...";
     flash("Backup request sent. The first run can take a long time to finish.", "info");
+    applyOptimisticBackupState("manual-web");
+    schedulePolling();
     try {
-      const payload = await api("/api/actions/backup", { method: "POST", body: JSON.stringify({ tag: "manual-web" }) });
+      const payload = await api("/api/actions/backup", {
+        method: "POST",
+        body: JSON.stringify({ tag: "manual-web" }),
+        timeoutMs: BACKUP_REQUEST_TIMEOUT_MS,
+      });
       flash(payload.ok ? "Backup completed successfully." : "Backup failed.", payload.ok ? "info" : "error");
-      await loadAll();
+      await loadAll({ includeConfig: false });
     } catch (error) {
       try {
-        await refreshStatus();
+        await loadRuntime();
+        await Promise.allSettled([loadRemoteQuota(), loadSummary(), loadLogs(), loadStatus()]);
       } catch {
         // Ignore status refresh failures and fall back to the original error.
       }
-      if (state.status?.current_run?.action === "backup") {
+      const currentRun = state.runtime?.current_run || state.summary?.current_run || state.status?.current_run;
+      if (currentRun?.action === "backup") {
         flash("Backup is still running on the server. The web request timed out while waiting for completion.", "info");
       } else {
         flash(`Backup failed to start: ${error.message}`, "error");
       }
     } finally {
-      button.disabled = false;
-      button.textContent = originalLabel;
+      const activeRun = state.runtime?.current_run || state.summary?.current_run || state.status?.current_run;
+      if (activeRun?.action !== "backup") {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
     }
   });
 
@@ -299,14 +750,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   try {
+    renderLogs();
+    renderSyncState();
     await loadAll();
-    statusPollHandle = window.setInterval(async () => {
-      try {
-        await refreshStatus();
-      } catch {
-        // Keep the last known UI state if background refresh fails.
-      }
-    }, 15000);
+    schedulePolling();
   } catch (error) {
     flash(error.message, "error");
   }

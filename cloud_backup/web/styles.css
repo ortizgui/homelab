@@ -86,6 +86,49 @@ body {
   flex-wrap: wrap;
 }
 
+.toolbar-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.sync-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.2);
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.sync-pill.sync-error {
+  border-color: rgba(159, 18, 57, 0.25);
+  background: rgba(159, 18, 57, 0.12);
+  color: var(--danger);
+}
+
+.sync-pill.sync-active {
+  border-color: rgba(15, 118, 110, 0.35);
+  background: rgba(15, 118, 110, 0.16);
+}
+
+.sync-pill.sync-warn {
+  border-color: rgba(180, 120, 20, 0.28);
+  background: rgba(180, 120, 20, 0.14);
+  color: #8a5a14;
+}
+
+.sync-note {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
 .flash {
   margin: 18px 0;
   padding: 12px 14px;
@@ -129,9 +172,86 @@ body {
   box-shadow: var(--shadow);
 }
 
+.card.loading-card :is(.metric, p, pre, li, .progress-track) {
+  color: transparent !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.card.loading-card :is(.metric, p, pre, li)::after,
+.card.loading-card .progress-track::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(233, 223, 209, 0.9) 0%, rgba(247, 241, 232, 1) 50%, rgba(233, 223, 209, 0.9) 100%);
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.card.loading-card .metric::after {
+  border-radius: 14px;
+}
+
+.card.loading-card .progress-track {
+  background: rgba(231, 221, 208, 0.7);
+}
+
+.card.loading-card .progress-fill {
+  visibility: hidden;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
 .metric {
   font-size: 2rem;
   font-weight: 700;
+}
+
+.metric-small {
+  font-size: 1.55rem;
+}
+
+.metric-success {
+  color: var(--accent);
+}
+
+.metric-danger {
+  color: var(--danger);
+}
+
+.metric-accent {
+  color: #0b5f58;
+}
+
+.progress-track {
+  margin-top: 14px;
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7ddd0;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f766e 0%, #2aa198 100%);
+  transition: width 0.3s ease;
+}
+
+.muted-copy {
+  color: var(--muted);
+  margin-top: 10px;
 }
 
 .panel {
@@ -145,6 +265,12 @@ body {
 .form-card label {
   display: grid;
   gap: 6px;
+  margin-top: 12px;
+}
+
+.source-row {
+  display: grid;
+  gap: 12px;
   margin-top: 12px;
 }
 

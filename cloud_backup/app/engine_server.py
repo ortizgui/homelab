@@ -8,16 +8,20 @@ from .configuration import load_config
 from .http_utils import JsonHandler
 from .operations import (
     browse_path,
+    dashboard_summary,
     healthcheck,
     list_logs,
     list_snapshots,
     preflight,
     repository_stats,
     restore_snapshot,
+    runtime_status,
     run_backup,
     run_forget,
     run_prune,
+    remote_storage_quota,
     status,
+    unlock_repository,
 )
 from .runtime import json_response
 
@@ -35,6 +39,15 @@ class EngineHandler(JsonHandler):
                 return
             if parsed.path == "/engine/status":
                 self.send_json(status())
+                return
+            if parsed.path == "/engine/summary":
+                self.send_json(dashboard_summary())
+                return
+            if parsed.path == "/engine/remote-quota":
+                self.send_json(remote_storage_quota())
+                return
+            if parsed.path == "/engine/runtime":
+                self.send_json(runtime_status())
                 return
             if parsed.path == "/engine/preflight":
                 self.send_json(preflight(config))
@@ -68,6 +81,9 @@ class EngineHandler(JsonHandler):
                 return
             if parsed.path == "/engine/prune":
                 self.send_json(run_prune())
+                return
+            if parsed.path == "/engine/unlock":
+                self.send_json(unlock_repository())
                 return
             if parsed.path == "/engine/restore":
                 self.send_json(

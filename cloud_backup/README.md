@@ -130,6 +130,15 @@ docker compose exec backup-engine python3 -m app.operation_cli restore <snapshot
 
 Legacy shell wrappers still exist in [`cloud_backup/scripts`](/Volumes/homeX/git/homelab/cloud_backup/scripts), but they now delegate to the Python CLI.
 
+To recover after the containers were paused during a backup, use:
+
+```bash
+cd /Volumes/homeX/git/homelab/cloud_backup
+./scripts/resume_backup.sh
+```
+
+The script brings the backup services back up, waits for `backup-engine`, runs `preflight`, and then starts a new backup. If a previous run left `state/current-run.json`, the engine performs its recovery prune automatically before continuing. When repository access fails after an interrupted run, the script also attempts `restic unlock --remove-all` once before aborting.
+
 ## disk-health integration
 
 The stack mounts [`disk-health`](/Volumes/homeX/git/homelab/disk-health) read-only for reuse and supports two simple integration points:
