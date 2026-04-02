@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -121,6 +123,23 @@ class BackupCommandTests(unittest.TestCase):
         append_log_mock.assert_called_once()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["action"], "unlock")
+
+    def test_interrupted_run_ignores_active_pid(self) -> None:
+        from app import runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "current-run.json"
+            state_path.write_text(
+                json.dumps({"action": "backup", "started_at": "2026-03-29T03:00:00+00:00", "tag": "scheduled", "pid": 321}),
+                encoding="utf-8",
+            )
+
+            with patch("app.runtime.current_run_state_file", return_value=state_path):
+                with patch("app.runtime.os.kill", return_value=None) as kill_mock:
+                    payload = runtime.interrupted_run()
+
+        kill_mock.assert_called_once_with(321, 0)
+        self.assertIsNone(payload)
 
 
 if __name__ == "__main__":

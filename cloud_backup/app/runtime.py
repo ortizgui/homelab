@@ -145,7 +145,7 @@ def begin_run(action: str, **details: Any) -> dict[str, Any] | None:
     with _RUN_STATE_LOCK:
         if _CURRENT_RUN is not None:
             return dict(_CURRENT_RUN)
-        _CURRENT_RUN = {"action": action, "started_at": utc_now(), **details}
+        _CURRENT_RUN = {"action": action, "started_at": utc_now(), "pid": os.getpid(), **details}
         state_file = current_run_state_file()
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state_file.write_text(json.dumps(_CURRENT_RUN, sort_keys=True) + "\n", encoding="utf-8")
@@ -181,7 +181,17 @@ def interrupted_run() -> dict[str, Any] | None:
         state_file = current_run_state_file()
         if not state_file.exists():
             return None
-        return json.loads(state_file.read_text(encoding="utf-8"))
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+        pid = payload.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 0)
+                return None
+            except ProcessLookupError:
+                return payload
+            except PermissionError:
+                return None
+        return payload
 
 
 def list_json_logs(name: str, limit: int = 200) -> list[dict[str, Any]]:

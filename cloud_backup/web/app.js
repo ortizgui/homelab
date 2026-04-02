@@ -209,6 +209,56 @@ function renderBackupProgress(currentRun) {
   currentNode.textContent = progress.current_file ? `Current file: ${progress.current_file}` : "";
 }
 
+function findLatestBackupLog() {
+  return state.logs
+    .slice()
+    .reverse()
+    .find((entry) => entry.action === "backup" && Object.prototype.hasOwnProperty.call(entry, "ok"));
+}
+
+function renderLatestBackupResult() {
+  const resultNode = document.getElementById("last-backup-result");
+  const summaryNode = document.getElementById("last-backup-result-summary");
+  const detailNode = document.getElementById("last-backup-result-detail");
+  const currentRun = state.runtime?.current_run || state.status?.current_run;
+
+  if (currentRun?.action === "backup") {
+    const progress = currentRun.progress || {};
+    const percent = formatPercent(progress.percent_done);
+    resultNode.textContent = percent || "Running";
+    resultNode.className = "metric metric-small metric-accent";
+    summaryNode.textContent = `Backup in progress since ${formatTimestamp(currentRun.started_at)}.`;
+    detailNode.textContent = progress.current_file ? `Current file: ${progress.current_file}` : "Collecting progress from restic.";
+    return;
+  }
+
+  const latest = findLatestBackupLog();
+  if (!latest) {
+    resultNode.textContent = "Unknown";
+    resultNode.className = "metric metric-small";
+    summaryNode.textContent = "No backup recorded yet.";
+    detailNode.textContent = "";
+    return;
+  }
+
+  const ok = latest.ok === true;
+  resultNode.textContent = ok ? "Success" : "Failed";
+  resultNode.className = `metric metric-small ${ok ? "metric-success" : "metric-danger"}`;
+  const tag = latest.tag ? ` Tag: ${latest.tag}.` : "";
+  summaryNode.textContent = `${ok ? "Last backup finished successfully." : "Last backup finished with errors."}${tag} ${formatTimestamp(latest.timestamp)}`.trim();
+  const stderr = (latest.stderr || "").trim();
+  const stdout = (latest.stdout || "").trim();
+  if (stderr) {
+    detailNode.textContent = stderr.split("\n").slice(-1)[0];
+  } else if (stdout) {
+    detailNode.textContent = "Result registered in operation log.";
+  } else {
+    detailNode.textContent = state.runtime?.last_successful_backup || state.status?.last_successful_backup
+      ? `Last successful backup: ${formatTimestamp(state.runtime?.last_successful_backup || state.status?.last_successful_backup)}`
+      : "";
+  }
+}
+
 function switchView(nextView) {
   document.querySelectorAll("[data-panel]").forEach((panel) => {
     panel.classList.toggle("visible", panel.dataset.panel === nextView);
@@ -310,6 +360,7 @@ function renderStatus() {
   const currentRun = state.runtime?.current_run || payload.current_run;
   renderRunIndicator();
   renderBackupProgress(currentRun);
+  renderLatestBackupResult();
   document.getElementById("status-gate").textContent = payload.preflight?.ok ? "PASS" : "BLOCKED";
   document.getElementById("status-failures").textContent = (payload.preflight?.failures || []).join("\n") || "No blocking failures.";
   document.getElementById("snapshot-count").textContent = String((payload.snapshots || []).length);
@@ -413,6 +464,7 @@ async function loadLogs() {
     state.lastUpdated.logs = payload.timestamp;
     setSyncState("logs", "idle");
     renderLogs();
+    renderLatestBackupResult();
   } catch (error) {
     if (requestId === state.requestIds.logs) {
       setSyncState("logs", "error");

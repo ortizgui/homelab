@@ -171,6 +171,22 @@ body {
   font-weight: 700;
 }
 
+.metric-small {
+  font-size: 1.55rem;
+}
+
+.metric-success {
+  color: var(--accent);
+}
+
+.metric-danger {
+  color: var(--danger);
+}
+
+.metric-accent {
+  color: #0b5f58;
+}
+
 .progress-track {
   margin-top: 14px;
   width: 100%;
