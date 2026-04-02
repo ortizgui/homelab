@@ -44,22 +44,22 @@
 
         <section data-panel="status" class="panel visible">
           <div class="card-grid">
-            <article class="card">
+            <article id="card-safety-gate" class="card">
               <h3>Safety Gate</h3>
               <div id="status-gate" class="metric">Unknown</div>
               <pre id="status-failures"></pre>
             </article>
-            <article class="card">
+            <article id="card-snapshots" class="card">
               <h3>Snapshots</h3>
               <div id="snapshot-count" class="metric">0</div>
               <p id="last-backup">No successful backup yet.</p>
             </article>
-            <article class="card">
+            <article id="card-repository-usage" class="card">
               <h3>Repository Usage</h3>
               <div id="repo-usage" class="metric">N/A</div>
               <p id="repo-files">Waiting for stats.</p>
             </article>
-            <article class="card">
+            <article id="card-backup-progress" class="card">
               <h3>Backup Progress</h3>
               <div id="backup-progress-percent" class="metric">Idle</div>
               <div class="progress-track" aria-hidden="true">
@@ -68,14 +68,14 @@
               <p id="backup-progress-summary">No backup in progress.</p>
               <p id="backup-progress-current" class="muted-copy"></p>
             </article>
-            <article class="card">
+            <article id="card-last-backup-result" class="card">
               <h3>Last Backup Result</h3>
               <div id="last-backup-result" class="metric metric-small">Unknown</div>
               <p id="last-backup-result-summary">No backup recorded yet.</p>
               <p id="last-backup-result-detail" class="muted-copy"></p>
             </article>
           </div>
-          <article class="card">
+          <article id="card-blocked-reasons" class="card">
             <h3>Blocked reasons</h3>
             <ul id="preflight-list" class="plain-list"></ul>
           </article>

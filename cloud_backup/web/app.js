@@ -135,16 +135,22 @@ function hasActiveRun() {
 function setSyncState(key, nextState) {
   state.sync[key] = nextState;
   renderSyncState();
+  renderCardLoadingState();
 }
 
 function renderSyncState() {
   const node = document.getElementById("sync-status");
   const detail = document.getElementById("sync-updated");
+  const hardError = state.sync.summary === "error" || state.sync.runtime === "error";
+  const softError = !hardError && (state.sync.status === "error" || state.sync.remoteQuota === "error" || state.sync.logs === "error");
   const currentStates = Object.values(state.sync);
 
-  if (currentStates.includes("error")) {
+  if (hardError) {
     node.textContent = "Sync degraded";
     node.className = "sync-pill sync-error";
+  } else if (softError) {
+    node.textContent = "Partial sync";
+    node.className = "sync-pill sync-warn";
   } else if (hasActiveRun() || currentStates.includes("loading")) {
     node.textContent = hasActiveRun() ? "Live monitoring" : "Syncing";
     node.className = "sync-pill sync-active";
@@ -160,6 +166,30 @@ function renderSyncState() {
   detail.textContent = latestTimestamp
     ? `Last update: ${formatTimestamp(latestTimestamp)}`
     : "The dashboard is connecting to the backend.";
+}
+
+function setCardLoading(cardId, isLoading) {
+  const node = document.getElementById(cardId);
+  if (!node) {
+    return;
+  }
+  node.classList.toggle("loading-card", isLoading);
+}
+
+function renderCardLoadingState() {
+  const summaryPending = state.sync.summary === "loading" && !state.summary;
+  const quotaPending = state.sync.remoteQuota === "loading" && !state.remoteQuota;
+  const statusPending = state.sync.status === "loading" && !state.status;
+  const logsPending = state.sync.logs === "loading" && state.logs.length === 0;
+  const runtimePending = state.sync.runtime === "loading" && !state.runtime;
+  const progressPending = runtimePending && !hasActiveRun();
+
+  setCardLoading("card-safety-gate", summaryPending && statusPending);
+  setCardLoading("card-snapshots", summaryPending && statusPending);
+  setCardLoading("card-repository-usage", quotaPending);
+  setCardLoading("card-backup-progress", progressPending);
+  setCardLoading("card-last-backup-result", summaryPending && logsPending);
+  setCardLoading("card-blocked-reasons", summaryPending && statusPending);
 }
 
 function renderRunIndicator() {
@@ -602,6 +632,7 @@ function applyOptimisticBackupState(tag) {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  renderCardLoadingState();
   document.querySelectorAll(".sidebar button[data-view]").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.view));
   });
