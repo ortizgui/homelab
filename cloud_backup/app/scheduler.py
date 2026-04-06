@@ -61,7 +61,8 @@ def trigger(path: str, payload: dict | None = None, timeout: int = 60 * 60) -> d
 
 
 def status() -> dict:
-    with urllib.request.urlopen(f"{ENGINE_URL}/engine/status", timeout=30) as response:
+    # The scheduler only needs to know whether a job is already running.
+    with urllib.request.urlopen(f"{ENGINE_URL}/engine/runtime", timeout=10) as response:
         return json.loads(response.read().decode("utf-8") or "{}")
 
 

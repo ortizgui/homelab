@@ -5,9 +5,16 @@ services:
       dockerfile: Dockerfile
     container_name: cloud-backup-engine
     restart: unless-stopped
+    pids_limit: 1024
+    ulimits:
+      nproc: 4096
+      nofile:
+        soft: 65536
+        hard: 65536
     env_file:
       - .env
     environment:
+      GOMAXPROCS: ${CLOUD_BACKUP_GOMAXPROCS:-2}
       TZ: ${TZ:-America/Sao_Paulo}
       CLOUD_BACKUP_CONFIG_FILE: /data/config/config.json
       CLOUD_BACKUP_STATE_DIR: /data/state

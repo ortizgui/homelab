@@ -945,6 +945,17 @@ def prune_old_logs() -> None:
 
 
 def healthcheck() -> dict[str, Any]:
-    recover_interrupted_backup()
-    preflight_result = preflight(load_config())
-    return json_response(preflight_result["ok"], details=preflight_result)
+    try:
+        load_config()
+    except Exception as exc:
+        return json_response(False, message=f"Configuration load failed: {exc}")
+
+    runtime = runtime_status()
+    return json_response(
+        True,
+        details={
+            "service": "backup-engine",
+            "current_run": runtime.get("current_run"),
+            "last_successful_backup": runtime.get("last_successful_backup"),
+        },
+    )
