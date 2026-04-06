@@ -104,6 +104,22 @@ The initial saved configuration starts with:
 - `GET /api/config/export`: export config bundle
 - `POST /api/config/import`: import config bundle with schema validation
 
+## Telegram notifications
+
+If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured, the backup engine can send Telegram messages on both success and failure.
+
+Successful backup notifications include:
+
+- backup tag
+- repository path
+- snapshot ID
+- processed/new/changed file counts
+- uploaded and scanned data totals
+- total backup duration
+- current snapshot count in the repository
+
+Failure notifications include the same context when available, plus the last reported error and whether the automatic recovery prune succeeded.
+
 ## UI coverage
 
 The web UI provides:

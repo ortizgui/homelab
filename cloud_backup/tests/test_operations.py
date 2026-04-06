@@ -11,10 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.configuration import default_config
 from app.operations import (
+    build_backup_notification_details,
     build_backup_command,
     check_repository_access,
+    format_bytes,
+    format_duration,
     normalize_bandwidth_limit,
     parse_restic_progress_line,
+    parse_restic_summary,
     recover_interrupted_backup,
     run_post_failure_prune,
     unlock_repository,
@@ -75,6 +79,68 @@ class BackupCommandTests(unittest.TestCase):
         self.assertEqual(payload["phase"], "finalizing")
         self.assertEqual(payload["snapshot_id"], "abc123")
         self.assertEqual(payload["total_files_processed"], 10)
+
+    def test_parse_restic_summary_returns_latest_summary(self) -> None:
+        stdout = "\n".join(
+            [
+                '{"message_type":"status","percent_done":0.4}',
+                '{"message_type":"summary","snapshot_id":"old","total_files_processed":10}',
+                '{"message_type":"summary","snapshot_id":"new","total_files_processed":20}',
+            ]
+        )
+
+        payload = parse_restic_summary(stdout)
+
+        self.assertEqual(payload["snapshot_id"], "new")
+        self.assertEqual(payload["total_files_processed"], 20)
+
+    def test_build_backup_notification_details_for_success(self) -> None:
+        config = default_config()
+        result = CommandResult(code=0, stdout="", stderr="", command=["restic", "backup"])
+        summary = {
+            "snapshot_id": "abc123",
+            "total_files_processed": 42,
+            "files_new": 5,
+            "files_changed": 4,
+            "data_added": 4096,
+            "total_bytes_processed": 16384,
+            "total_duration": 125,
+        }
+
+        details = build_backup_notification_details(
+            config,
+            "scheduled",
+            result,
+            summary,
+            snapshot_info={"ok": True, "count": 11, "latest_id": "abc123"},
+        )
+
+        self.assertIn("Tag: scheduled", details)
+        self.assertIn("Snapshot: abc123", details)
+        self.assertIn("Arquivos processados: 42", details)
+        self.assertIn("Snapshots no repositorio: 11", details)
+        self.assertIn("Duracao: 2m 5s", details)
+
+    def test_build_backup_notification_details_for_failure(self) -> None:
+        config = default_config()
+        result = CommandResult(code=1, stdout="", stderr="line 1\nfatal: upload failed", command=["restic", "backup"])
+
+        details = build_backup_notification_details(
+            config,
+            "manual",
+            result,
+            None,
+            snapshot_info={"ok": False, "count": 0, "stderr": "repository unavailable"},
+            post_failure_prune={"ok": True},
+        )
+
+        self.assertIn("Tag: manual", details)
+        self.assertIn("Motivo: fatal: upload failed", details)
+        self.assertIn("Prune de recuperacao: ok", details)
+
+    def test_format_helpers_render_human_readable_values(self) -> None:
+        self.assertEqual(format_bytes(2048), "2.0 KiB")
+        self.assertEqual(format_duration(3665), "1h 1m 5s")
 
     def test_recover_interrupted_backup_runs_cleanup_once(self) -> None:
         interrupted = {"action": "backup", "started_at": "2026-03-29T03:00:00+00:00", "tag": "scheduled"}

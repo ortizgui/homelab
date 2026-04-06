@@ -1,0 +1,8 @@
+[Unit]
+Description=Homelab Telegram bot poller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/telegram-bot.sh

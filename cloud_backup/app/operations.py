@@ -163,6 +163,95 @@ def notify(config: dict[str, Any], level: str, title: str, details: str) -> None
             pass
 
 
+def parse_restic_summary(stdout: str) -> dict[str, Any] | None:
+    summary = None
+    for line in stdout.splitlines():
+        progress = parse_restic_progress_line(line)
+        if progress and progress.get("message_type") == "summary":
+            summary = progress
+    return summary
+
+
+def format_bytes(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    amount = float(value)
+    units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+    for unit in units:
+        if abs(amount) < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(amount)} {unit}"
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} PiB"
+
+
+def format_duration(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    total_seconds = max(0, int(round(float(value))))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds or not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
+def snapshot_overview(config: dict[str, Any]) -> dict[str, Any]:
+    result = run_command(["restic", "snapshots", "--json"], env=build_restic_env(config), timeout=120)
+    snapshots = json.loads(result.stdout) if result.code == 0 and result.stdout.strip() else []
+    latest_snapshot = snapshots[-1] if snapshots else {}
+    return {
+        "ok": result.code == 0,
+        "count": len(snapshots),
+        "latest_id": latest_snapshot.get("short_id") or latest_snapshot.get("id"),
+        "stderr": result.stderr,
+    }
+
+
+def build_backup_notification_details(
+    config: dict[str, Any],
+    tag: str,
+    result: Any,
+    summary: dict[str, Any] | None,
+    snapshot_info: dict[str, Any] | None = None,
+    post_failure_prune: dict[str, Any] | None = None,
+) -> str:
+    lines = [
+        f"Tag: {tag}",
+        f"Repositorio: {config['provider']['repository']}",
+    ]
+    if summary:
+        lines.extend(
+            [
+                f"Snapshot: {summary.get('snapshot_id') or '-'}",
+                f"Arquivos processados: {summary.get('total_files_processed') if summary.get('total_files_processed') is not None else '-'}",
+                f"Arquivos novos: {summary.get('files_new') if summary.get('files_new') is not None else '-'}",
+                f"Arquivos alterados: {summary.get('files_changed') if summary.get('files_changed') is not None else '-'}",
+                f"Dados enviados: {format_bytes(summary.get('data_added'))}",
+                f"Dados lidos: {format_bytes(summary.get('total_bytes_processed'))}",
+                f"Duracao: {format_duration(summary.get('total_duration'))}",
+            ]
+        )
+    if snapshot_info:
+        count = snapshot_info.get("count")
+        lines.append(f"Snapshots no repositorio: {count if count is not None else '-'}")
+    if getattr(result, "code", 1) != 0:
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        failure_reason = stderr.splitlines()[-1] if stderr else "Falha sem detalhe adicional no stderr."
+        lines.append(f"Motivo: {failure_reason}")
+        if post_failure_prune is not None:
+            lines.append(f"Prune de recuperacao: {'ok' if post_failure_prune.get('ok') else 'falhou'}")
+    elif snapshot_info and snapshot_info.get("ok") is False and snapshot_info.get("stderr"):
+        lines.append("Observacao: nao foi possivel atualizar a contagem de snapshots apos o backup.")
+    return "\n".join(lines)
+
+
 def safe_sources(config: dict[str, Any]) -> list[dict[str, Any]]:
     return [source for source in config["sources"] if source.get("enabled")]
 
@@ -589,14 +678,38 @@ def run_backup(tag: str = "manual") -> dict[str, Any]:
                 on_stdout_line=handle_backup_stdout,
             )
             payload = json_response(result.code == 0, action="backup", tag=tag, command=command, stdout=result.stdout, stderr=result.stderr)
+            summary = parse_restic_summary(result.stdout)
             if result.code == 0:
                 (state_dir() / "last_successful_backup.txt").write_text(utc_now(), encoding="utf-8")
                 update_dashboard_cache(latest_backup=latest_backup_result())
                 remote_storage_quota(config)
-                notify(config, "success", "Backup concluido", f"Tag: {tag}")
+                notify(
+                    config,
+                    "success",
+                    "Backup concluido",
+                    build_backup_notification_details(
+                        config,
+                        tag,
+                        result,
+                        summary,
+                        snapshot_info=snapshot_overview(config),
+                    ),
+                )
             else:
-                run_post_failure_prune(config, "backup")
-                notify(config, "error", "Backup falhou", result.stderr[-800:])
+                post_failure_prune = run_post_failure_prune(config, "backup")
+                notify(
+                    config,
+                    "error",
+                    "Backup falhou",
+                    build_backup_notification_details(
+                        config,
+                        tag,
+                        result,
+                        summary,
+                        snapshot_info=snapshot_overview(config),
+                        post_failure_prune=post_failure_prune,
+                    ),
+                )
             append_log("operations.jsonl", payload)
             update_dashboard_cache(latest_backup=latest_backup_result())
             mark_dashboard_action("backup", "completed", ok=payload["ok"], tag=tag)
@@ -724,17 +837,7 @@ def latest_backup_result(limit: int = 400) -> dict[str, Any] | None:
     if latest is None:
         return None
 
-    summary = None
-    for line in (latest.get("stdout") or "").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            payload = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if payload.get("message_type") == "summary":
-            summary = payload
+    summary = parse_restic_summary(latest.get("stdout") or "")
 
     detail = (latest.get("stderr") or "").strip()
     if detail:
@@ -752,6 +855,9 @@ def latest_backup_result(limit: int = 400) -> dict[str, Any] | None:
         "total_bytes_processed": summary.get("total_bytes_processed") if summary else None,
         "total_files_processed": summary.get("total_files_processed") if summary else None,
         "data_added": summary.get("data_added") if summary else None,
+        "total_duration": summary.get("total_duration") if summary else None,
+        "files_new": summary.get("files_new") if summary else None,
+        "files_changed": summary.get("files_changed") if summary else None,
         "detail": detail,
     }
 
