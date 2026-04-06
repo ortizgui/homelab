@@ -34,3 +34,6 @@ cloud_backup/data/*
 !cloud_backup/data/restic-cache/.gitkeep
 !cloud_backup/data/state/.gitkeep
 cloud_backup/diagnostics/*
+
+**/diagnostics/*
+!**/diagnostics/.gitkeep
