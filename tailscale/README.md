@@ -70,6 +70,8 @@ cd /mnt/m2/docker/tailscale
 docker compose up -d
 ```
 
+The compose file in this project uses the latest stable container image verified for this update (`tailscale/tailscale:v1.92.5`) and explicitly enables kernel networking with `TS_USERSPACE=false`, which is required for reliable subnet routing and exit-node traffic from arbitrary applications.
+
 ### 5. Enable Subnet Routing in Tailscale
 
 1.  Open the [**Machines** tab](https://login.tailscale.com/admin/machines) in your Tailscale admin panel.
