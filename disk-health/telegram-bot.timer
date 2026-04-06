@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll Telegram bot commands for homelab status
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=telegram-bot.service
+
+[Install]
+WantedBy=timers.target

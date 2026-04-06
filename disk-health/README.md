@@ -1,7 +1,7 @@
 # disk-health — SMART & RAID monitor with Telegram alerts
 
 Lightweight disk/RAID health monitor for Debian/Armbian (e.g., Orange Pi/RPi).  
-It checks SMART for all real disks (SATA/NVMe/USB-SAT), inspects Linux mdadm RAID, and sends alerts to Telegram.
+ It checks SMART for all real disks (SATA/NVMe/USB-SAT), inspects Linux mdadm RAID, sends alerts to Telegram, and can answer Telegram commands for disk and backup status.
 
 ---
 
@@ -12,6 +12,7 @@ It checks SMART for all real disks (SATA/NVMe/USB-SAT), inspects Linux mdadm RAI
   - Reallocated_Sector_Ct, Current_Pending_Sector, Offline_Uncorrectable
 - mdadm RAID status (`/proc/mdstat` + `mdadm --detail`), detects degraded arrays.
 - Telegram alerts (Markdown), with anti-spam (only notifies on state changes).
+- Telegram bot mode with keyboard shortcuts for disk health and backup status.
 - Systemd service + timer (runs on boot and every 15 minutes).
 - Optional weekly SMART self-tests.
 
@@ -65,12 +66,15 @@ sudo apt install -y smartmontools jq mdadm curl
 ```bash
 .
 ├─ disk-health.sh                 # main checker
+├─ telegram-bot.sh                # interactive Telegram bot poller
 ├─ smart-selftest-short.sh        # (optional) weekly SMART short test
 ├─ disk-alert.conf               # config file (to be copied to /etc/disk-alert.conf)
-├─ systemd/disk-health.service
-├─ systemd/disk-health.timer
-├─ systemd/smart-selftest-short.service
-├─ systemd/smart-selftest-short.timer
+├─ disk-health.service
+├─ disk-health.timer
+├─ telegram-bot.service
+├─ telegram-bot.timer
+├─ smart-selftest-short.service
+├─ smart-selftest-short.timer
 └─ README.md
 ```
 
@@ -85,6 +89,9 @@ Create the config file with your token/chat and desired thresholds:
 # === Telegram ===
 TELEGRAM_TOKEN="123456:ABCDEF..."   # required
 TELEGRAM_CHAT_ID="123456789"        # required
+
+# Script called by the Telegram bot to fetch backup status
+#BACKUP_STATUS_SCRIPT="/usr/local/bin/cloud-backup-status.sh"
 
 # Temperature thresholds (°C)
 HDD_WARN_TEMP=55
@@ -110,13 +117,16 @@ sudo install -m 0600 disk-alert.conf /etc/disk-alert.conf
 
 # scripts
 sudo install -m 0755 disk-health.sh /usr/local/sbin/disk-health.sh
+sudo install -m 0755 telegram-bot.sh /usr/local/sbin/telegram-bot.sh
 sudo install -m 0755 smart-selftest-short.sh /usr/local/sbin/smart-selftest-short.sh
 
 # systemd
-sudo install -m 0644 systemd/disk-health.service /etc/systemd/system/disk-health.service
-sudo install -m 0644 systemd/disk-health.timer   /etc/systemd/system/disk-health.timer
-sudo install -m 0644 systemd/smart-selftest-short.service /etc/systemd/system/smart-selftest-short.service
-sudo install -m 0644 systemd/smart-selftest-short.timer   /etc/systemd/system/smart-selftest-short.timer
+sudo install -m 0644 disk-health.service /etc/systemd/system/disk-health.service
+sudo install -m 0644 disk-health.timer   /etc/systemd/system/disk-health.timer
+sudo install -m 0644 telegram-bot.service /etc/systemd/system/telegram-bot.service
+sudo install -m 0644 telegram-bot.timer   /etc/systemd/system/telegram-bot.timer
+sudo install -m 0644 smart-selftest-short.service /etc/systemd/system/smart-selftest-short.service
+sudo install -m 0644 smart-selftest-short.timer   /etc/systemd/system/smart-selftest-short.timer
 
 sudo systemctl daemon-reload
 ```
@@ -125,6 +135,7 @@ Enable periodic checks (every 15 min + on boot):
 
 ```bash
 sudo systemctl enable --now disk-health.timer
+sudo systemctl enable --now telegram-bot.timer
 ```
 
 (Optional) Enable weekly SMART short tests (Sunday 03:00):
@@ -149,7 +160,18 @@ journalctl -t disk-health -n 50 --no-pager
 
 - `--test`: Envia uma mensagem de teste para validar se a configuração do Telegram está funcionando
 - `--test --f`: Força o envio da mensagem mesmo que o último estado seja igual (ignora o controle de hash)
+- `--report`: Apenas imprime o relatório atual em Markdown, sem enviar alerta
 - Sem parâmetros: Execução normal (apenas envia alerta em caso de mudança de estado)
+
+## Telegram bot commands
+
+After enabling `telegram-bot.timer`, the same bot can answer:
+
+- `/start` or `/help`: show available actions and the Telegram keyboard
+- `/disks`: return the current disk health report
+- `/backup`: return the current backup status; if no backup is running, it returns the latest recorded backup result
+
+The keyboard buttons `Saude dos discos` and `Status do backup` trigger the same actions.
 
 **Nota importante**: Este script foi desenvolvido para sistemas Linux (Debian/Ubuntu/Armbian) onde os discos são nomeados como `/dev/sda`, `/dev/sdb`, `/dev/nvme0n1`, etc. Se você está testando no macOS, os discos sda/sdb/sdc não existem, por isso aparecem sem % de uso. O script funcionará corretamente quando executado no sistema Linux de destino.
 

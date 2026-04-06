@@ -39,6 +39,7 @@ WEEKLY_REPORT_MINUTE=${WEEKLY_REPORT_MINUTE:-0}
 # --- Variáveis Globais ---
 TEST_MODE=false
 FORCE_SEND=false
+REPORT_ONLY=false
 HOSTNAME=$(hostname)
 
 # --- Definição de Funções ---
@@ -212,6 +213,7 @@ main() {
         case $arg in
             --test) TEST_MODE=true ;;
             --f) FORCE_SEND=true ;;
+            --report) REPORT_ONLY=true ;;
         esac
     done
 
@@ -334,13 +336,19 @@ main() {
     fi
     
     # 6. Enviar Alerta
+    local message=$(build_report_message "$disk_report_lines" "$smart_issues_summary" "$critical_usage_summary" "$warning_usage_summary" "$has_issues")
+
+    if [ "$REPORT_ONLY" = true ]; then
+        echo "$message"
+        exit 0
+    fi
+
     if [ "$should_send_alert" = true ]; then
         log_debug "Alteração de estado detectada. Enviando alerta."
         if [ "$FORCE_SEND" = false ] && [ "$TEST_MODE" = false ]; then
             echo -n "$new_hash" > "$HASH_FILE"
         fi
-        
-        local message=$(build_report_message "$disk_report_lines" "$smart_issues_summary" "$critical_usage_summary" "$warning_usage_summary" "$has_issues")
+
         send_telegram_alert "$message"
         
         if [ "$TEST_MODE" = true ]; then
