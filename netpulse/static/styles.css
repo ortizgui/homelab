@@ -290,7 +290,7 @@ label span {
 .featured-frame {
   position: relative;
   min-height: 320px;
-  padding: 16px 12px 38px;
+  padding: 16px 12px 72px;
   border-radius: 22px;
   background:
     linear-gradient(180deg, rgba(18, 33, 51, 0.95), rgba(29, 44, 60, 0.98)),
@@ -308,7 +308,10 @@ label span {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 14px;
+  position: absolute;
+  left: 12px;
+  bottom: 14px;
+  z-index: 3;
 }
 
 .window-chip {
@@ -375,7 +378,7 @@ label span {
   position: absolute;
   left: 12px;
   right: 12px;
-  bottom: 12px;
+  bottom: 56px;
   height: 18px;
   pointer-events: none;
 }

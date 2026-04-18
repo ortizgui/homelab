@@ -202,6 +202,12 @@
         });
       }
 
+      function getSharedWindowOptions(featuredWindows, latencyWindows) {
+        const featuredOptions = getWindowOptionsFromWindows(featuredWindows);
+        const latencyOptions = getWindowOptionsFromWindows(latencyWindows);
+        return featuredOptions.filter((value) => latencyOptions.includes(value));
+      }
+
       function renderWindowSelector(options, selectedValue, dataAttribute) {
         return `
           <div class="window-selector" role="tablist" aria-label="Janela do grafico">
@@ -226,14 +232,21 @@
       function syncDashboardWindow(nextWindow) {
         selectedDashboardWindow = nextWindow;
         if (latestSummaryData) {
-          renderFeaturedChart(latestSummaryData.featured_windows);
-          renderLatencyChart(latestSummaryData.latency_series);
+          const sharedOptions = getSharedWindowOptions(
+            latestSummaryData.featured_windows,
+            latestSummaryData.latency_series
+          );
+          if (sharedOptions.length && !sharedOptions.includes(selectedDashboardWindow)) {
+            selectedDashboardWindow = sharedOptions.includes('24h') ? '24h' : sharedOptions[0];
+          }
+          renderFeaturedChart(latestSummaryData.featured_windows, sharedOptions);
+          renderLatencyChart(latestSummaryData.latency_series, sharedOptions);
         }
       }
 
-      function renderFeaturedChart(windows) {
+      function renderFeaturedChart(windows, sharedOptions = null) {
         const target = document.getElementById('featured-chart');
-        const options = getWindowOptionsFromWindows(windows);
+        const options = sharedOptions || getWindowOptionsFromWindows(windows);
         if (!options.length) {
           target.innerHTML = '<p class="muted">Sem dados agregados suficientes para o grafico.</p>';
           return;
@@ -305,7 +318,6 @@
 
         target.innerHTML = `
           <div class="featured-frame">
-            ${renderWindowSelector(options, selectedWindow, 'data-featured-window')}
             <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Grafico empilhado de problemas">
               <g class="chart-grid">${gridLines}</g>
               <path class="area degraded" d="${buildAreaPath(degradedPoints, width, height - padBottom)}"></path>
@@ -316,6 +328,7 @@
             </svg>
             <div class="featured-labels">${labels.join('')}</div>
             <div id="featured-tooltip" class="featured-tooltip" hidden></div>
+            ${renderWindowSelector(options, selectedWindow, 'data-featured-window')}
           </div>
         `;
 
@@ -365,9 +378,9 @@
         `).join('');
       }
 
-      function renderLatencyChart(payload) {
+      function renderLatencyChart(payload, sharedOptions = null) {
         const target = document.getElementById('latency-chart');
-        const options = getWindowOptionsFromWindows(payload);
+        const options = sharedOptions || getWindowOptionsFromWindows(payload);
         if (!options.length) {
           target.innerHTML = '<p class="muted">Sem dados suficientes de latência.</p>';
           document.getElementById('latency-legend').innerHTML = '';
@@ -426,7 +439,6 @@
 
         target.innerHTML = `
           <div class="featured-frame latency-frame">
-            ${renderWindowSelector(options, selectedWindow, 'data-latency-window')}
             <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Grafico de latencia">
               <g class="chart-grid">${gridLines}</g>
               ${paths}
@@ -435,6 +447,7 @@
             </svg>
             <div class="featured-labels">${labels.join('')}</div>
             <div id="latency-tooltip" class="featured-tooltip" hidden></div>
+            ${renderWindowSelector(options, selectedWindow, 'data-latency-window')}
           </div>
         `;
 
@@ -565,6 +578,8 @@
         const response = await fetch('/api/summary');
         const data = await response.json();
         latestSummaryData = data;
+        const sharedOptions = getSharedWindowOptions(data.featured_windows, data.latency_series);
+        getPreferredWindow(sharedOptions);
 
         const latest = data.latest;
         const badge = document.getElementById('status-badge');
@@ -580,8 +595,8 @@
         badge.className = `status-badge ${latest.status}`;
         text.textContent = `Última coleta em ${latest.ts_local}, host DNS consultado: ${latest.dns_hostname}.`;
 
-        renderFeaturedChart(data.featured_windows);
-        renderLatencyChart(data.latency_series);
+        renderFeaturedChart(data.featured_windows, sharedOptions);
+        renderLatencyChart(data.latency_series, sharedOptions);
         renderIncidentWindows(data.incident_windows);
         renderChecks(latest);
         renderSummaryCards(data.status_counts_24h);
