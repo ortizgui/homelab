@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from collections import defaultdict
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, render_template, request
@@ -127,30 +128,46 @@ def _build_chart_series(graph_retention_days: int) -> tuple[list[dict], list[dic
     return hourly_series, daily_series, featured_series
 
 
-def _build_featured_breakdown_windows(graph_retention_days: int) -> dict[str, list[dict]]:
+def _bucket_sample_ts(ts: str, minutes: int = 5) -> datetime:
+    local_dt = datetime.fromisoformat(ts).astimezone(ZoneInfo(SETTINGS.timezone))
+    minute = (local_dt.minute // minutes) * minutes
+    return local_dt.replace(minute=minute, second=0, microsecond=0)
+
+
+def _build_featured_short_windows(samples: list[dict]) -> dict[str, list[dict]]:
+    result: dict[str, list[dict]] = {}
+    for window_name, hours in (("12h", 12), ("24h", 24)):
+        scoped = samples[-hours * 12 :]
+        buckets: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"offline": 0, "dns_issue": 0, "degraded": 0, "total": 0}
+        )
+        order: list[str] = []
+        for sample in scoped:
+            bucket_dt = _bucket_sample_ts(sample["ts"], 5)
+            bucket_key = bucket_dt.isoformat()
+            if bucket_key not in buckets:
+                order.append(bucket_key)
+            if sample["status"] != "healthy":
+                buckets[bucket_key][sample["status"]] += 1
+                buckets[bucket_key]["total"] += 1
+
+        result[window_name] = [
+            {
+                "bucket": datetime.fromisoformat(bucket_key).strftime("%m-%d %H:%M"),
+                "offline": buckets[bucket_key]["offline"],
+                "dns_issue": buckets[bucket_key]["dns_issue"],
+                "degraded": buckets[bucket_key]["degraded"],
+                "total": buckets[bucket_key]["total"],
+            }
+            for bucket_key in order
+        ]
+    return result
+
+
+def _build_featured_breakdown_windows(graph_retention_days: int, samples: list[dict]) -> dict[str, list[dict]]:
     hourly_rows = STORAGE.fetch_hourly_rollups(limit=24)
     daily_rows = STORAGE.fetch_daily_rollups(limit=graph_retention_days)
-    return {
-        "12h": [
-            {
-                "bucket": datetime.fromisoformat(row["bucket"]).astimezone(ZoneInfo(SETTINGS.timezone)).strftime("%m-%d %H:00"),
-                "offline": row["offline"],
-                "dns_issue": row["dns_issue"],
-                "degraded": row["degraded"],
-                "total": row["issue_samples"],
-            }
-            for row in hourly_rows[-12:]
-        ],
-        "24h": [
-            {
-                "bucket": datetime.fromisoformat(row["bucket"]).astimezone(ZoneInfo(SETTINGS.timezone)).strftime("%m-%d %H:00"),
-                "offline": row["offline"],
-                "dns_issue": row["dns_issue"],
-                "degraded": row["degraded"],
-                "total": row["issue_samples"],
-            }
-            for row in hourly_rows
-        ],
+    windows = {
         "7d": [
             {
                 "bucket": row["bucket"][5:],
@@ -202,9 +219,98 @@ def _build_featured_breakdown_windows(graph_retention_days: int) -> dict[str, li
             for row in daily_rows[-365:]
         ],
     }
+    windows.update(_build_featured_short_windows(samples))
+    return windows
 
 
-def _build_latency_series(graph_retention_days: int) -> dict[str, dict]:
+def _build_latency_short_windows(samples: list[dict]) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    for window_name, hours in (("12h", 12), ("24h", 24)):
+        scoped = samples[-hours * 12 :]
+        bucket_metric_acc: dict[str, dict[str, dict[str, float | int | str]]] = defaultdict(dict)
+        bucket_order: list[str] = []
+
+        for sample in scoped:
+            bucket_dt = _bucket_sample_ts(sample["ts"], 5)
+            bucket_key = bucket_dt.isoformat()
+            if bucket_key not in bucket_metric_acc:
+                bucket_order.append(bucket_key)
+
+            for item in sample["tcp_results"]:
+                metric_key = f"tcp::{item['target']}"
+                entry = bucket_metric_acc[bucket_key].setdefault(
+                    metric_key,
+                    {
+                        "label": f"TCP {item['target']}",
+                        "kind": "tcp",
+                        "success_count": 0,
+                        "failure_count": 0,
+                        "latency_sum_ms": 0.0,
+                    },
+                )
+                if item["ok"]:
+                    entry["success_count"] += 1
+                    entry["latency_sum_ms"] += float(item.get("latency_ms") or 0)
+                else:
+                    entry["failure_count"] += 1
+
+            for item in sample["dns_results"]:
+                metric_key = f"dns::{item['resolver']}"
+                entry = bucket_metric_acc[bucket_key].setdefault(
+                    metric_key,
+                    {
+                        "label": f"DNS {item['resolver']}",
+                        "kind": "dns",
+                        "success_count": 0,
+                        "failure_count": 0,
+                        "latency_sum_ms": 0.0,
+                    },
+                )
+                if item["ok"]:
+                    entry["success_count"] += 1
+                    entry["latency_sum_ms"] += float(item.get("latency_ms") or 0)
+                else:
+                    entry["failure_count"] += 1
+
+        metric_keys = sorted({key for bucket in bucket_metric_acc.values() for key in bucket.keys()})
+        metric_meta = {
+            key: next(bucket[key] for bucket in bucket_metric_acc.values() if key in bucket)
+            for key in metric_keys
+        }
+        series = [
+            {"key": key, "label": metric_meta[key]["label"], "kind": metric_meta[key]["kind"], "values": []}
+            for key in metric_keys
+        ]
+        timeline: list[dict] = []
+        for bucket_key in bucket_order:
+            metrics = []
+            for series_item in series:
+                entry = bucket_metric_acc[bucket_key].get(series_item["key"])
+                if entry and entry["success_count"]:
+                    avg_latency = round(entry["latency_sum_ms"] / entry["success_count"], 1)
+                else:
+                    avg_latency = None
+                failure_count = int(entry["failure_count"]) if entry else 0
+                series_item["values"].append(avg_latency)
+                metrics.append(
+                    {
+                        "label": series_item["label"],
+                        "value": avg_latency,
+                        "ok": avg_latency is not None,
+                        "failures": failure_count,
+                    }
+                )
+            timeline.append(
+                {
+                    "bucket": datetime.fromisoformat(bucket_key).strftime("%m-%d %H:%M"),
+                    "metrics": metrics,
+                }
+            )
+        result[window_name] = {"series": series, "timeline": timeline}
+    return result
+
+
+def _build_latency_series(graph_retention_days: int, samples: list[dict]) -> dict[str, dict]:
     def group_rows_by_bucket(rows: list) -> list[list]:
         grouped: dict[str, list] = {}
         for row in rows:
@@ -273,15 +379,15 @@ def _build_latency_series(graph_retention_days: int) -> dict[str, dict]:
 
     hourly_rows = STORAGE.fetch_metric_latency_rollups("hour", 24)
     daily_rows = STORAGE.fetch_metric_latency_rollups("day", graph_retention_days)
-    return {
-        "12h": build_payload(trim_bucket_rows(hourly_rows, 12), "hour"),
-        "24h": build_payload(hourly_rows, "hour"),
+    result = {
         "7d": build_payload(trim_bucket_rows(daily_rows, 7), "day"),
         "30d": build_payload(trim_bucket_rows(daily_rows, 30), "day"),
         "90d": build_payload(trim_bucket_rows(daily_rows, 90), "day"),
         "180d": build_payload(trim_bucket_rows(daily_rows, 180), "day"),
         "365d": build_payload(trim_bucket_rows(daily_rows, 365), "day"),
     }
+    result.update(_build_latency_short_windows(samples))
+    return result
 
 
 @app.get("/")
@@ -307,8 +413,8 @@ def api_summary():
     ]
     incidents = _build_incidents(samples)
     hourly_series, daily_series, _ = _build_chart_series(runtime["graph_retention_days"])
-    featured_windows = _build_featured_breakdown_windows(runtime["graph_retention_days"])
-    latency_series = _build_latency_series(runtime["graph_retention_days"])
+    featured_windows = _build_featured_breakdown_windows(runtime["graph_retention_days"], samples)
+    latency_series = _build_latency_series(runtime["graph_retention_days"], samples)
     storage_stats = STORAGE.fetch_sample_storage_stats()
     incident_windows = [
         STORAGE.fetch_incident_totals(30),
