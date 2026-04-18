@@ -223,6 +223,9 @@
       }
 
       function getPreferredWindow(options) {
+        if (!options.length) {
+          return null;
+        }
         if (!selectedDashboardWindow || !options.includes(selectedDashboardWindow)) {
           selectedDashboardWindow = options.includes('24h') ? '24h' : options[0];
         }
@@ -246,7 +249,8 @@
 
       function renderFeaturedChart(windows, sharedOptions = null) {
         const target = document.getElementById('featured-chart');
-        const options = sharedOptions || getWindowOptionsFromWindows(windows);
+        const ownOptions = getWindowOptionsFromWindows(windows);
+        const options = sharedOptions && sharedOptions.length ? sharedOptions : ownOptions;
         if (!options.length) {
           target.innerHTML = '<p class="muted">Sem dados agregados suficientes para o grafico.</p>';
           return;
@@ -380,7 +384,8 @@
 
       function renderLatencyChart(payload, sharedOptions = null) {
         const target = document.getElementById('latency-chart');
-        const options = sharedOptions || getWindowOptionsFromWindows(payload);
+        const ownOptions = getWindowOptionsFromWindows(payload);
+        const options = sharedOptions && sharedOptions.length ? sharedOptions : ownOptions;
         if (!options.length) {
           target.innerHTML = '<p class="muted">Sem dados suficientes de latência.</p>';
           document.getElementById('latency-legend').innerHTML = '';

@@ -460,3 +460,113 @@ label span {
     justify-content: flex-start;
   }
 }
+
+@media (max-width: 640px) {
+  .layout {
+    padding: 20px 12px 32px;
+  }
+
+  .panel {
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  h1 {
+    font-size: clamp(2.2rem, 12vw, 3.5rem);
+  }
+
+  h2 {
+    font-size: 1.05rem;
+    margin-bottom: 10px;
+  }
+
+  .panel-head {
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .featured-legend {
+    gap: 8px 12px;
+    font-size: 0.92rem;
+  }
+
+  .featured-frame {
+    min-height: 296px;
+    padding: 12px 10px 84px;
+    border-radius: 18px;
+  }
+
+  .featured-frame svg {
+    height: 232px;
+  }
+
+  .featured-labels {
+    left: 10px;
+    right: 10px;
+    bottom: 58px;
+    height: 16px;
+  }
+
+  .featured-labels span {
+    font-size: 10px;
+  }
+
+  .window-selector {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .window-selector::-webkit-scrollbar {
+    display: none;
+  }
+
+  .window-chip {
+    flex: 0 0 auto;
+    min-width: 62px;
+    padding: 8px 12px;
+  }
+
+  .featured-tooltip {
+    top: 10px;
+    min-width: 150px;
+    max-width: min(78vw, 220px);
+    padding: 10px 12px;
+    gap: 4px;
+  }
+
+  .featured-tooltip strong {
+    font-size: 0.88rem;
+  }
+
+  .featured-tooltip span,
+  .chart-grid text {
+    font-size: 0.74rem;
+  }
+
+  .status-badge,
+  .stat-card,
+  .mini-card,
+  .check,
+  .incident {
+    border-radius: 16px;
+  }
+
+  .check,
+  .incident,
+  .bar-row {
+    gap: 10px;
+  }
+
+  .top-nav-link,
+  .settings-form-page button {
+    min-width: 0;
+  }
+}
