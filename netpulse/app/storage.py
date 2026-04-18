@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS daily_incident_rollups (
     degraded_incidents INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS metric_latency_rollups (
+    bucket_type TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    metric_key TEXT NOT NULL,
+    metric_label TEXT NOT NULL,
+    metric_kind TEXT NOT NULL,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    latency_sum_ms REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket_type, bucket, metric_key)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -90,6 +102,33 @@ class Storage:
             int(status == "offline"),
             int(status == "degraded"),
         )
+        metric_rows: list[tuple[str, str, str, str, str, int, int, float]] = []
+
+        for item in sample["tcp_results"]:
+            metric_rows.extend(
+                self._build_metric_rollup_rows(
+                    hourly_bucket=hourly_bucket,
+                    daily_bucket=daily_bucket,
+                    metric_key=f"tcp::{item['target']}",
+                    metric_label=f"TCP {item['target']}",
+                    metric_kind="tcp",
+                    latency_ms=item.get("latency_ms"),
+                    ok=item["ok"],
+                )
+            )
+
+        for item in sample["dns_results"]:
+            metric_rows.extend(
+                self._build_metric_rollup_rows(
+                    hourly_bucket=hourly_bucket,
+                    daily_bucket=daily_bucket,
+                    metric_key=f"dns::{item['resolver']}",
+                    metric_label=f"DNS {item['resolver']}",
+                    metric_kind="dns",
+                    latency_ms=item.get("latency_ms"),
+                    ok=item["ok"],
+                )
+            )
 
         with self.connect() as conn:
             previous = conn.execute(
@@ -161,7 +200,60 @@ class Storage:
                         int(status == "degraded"),
                     ),
                 )
+            if metric_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO metric_latency_rollups (
+                        bucket_type, bucket, metric_key, metric_label, metric_kind,
+                        success_count, failure_count, latency_sum_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_type, bucket, metric_key) DO UPDATE SET
+                        success_count = success_count + excluded.success_count,
+                        failure_count = failure_count + excluded.failure_count,
+                        latency_sum_ms = latency_sum_ms + excluded.latency_sum_ms,
+                        metric_label = excluded.metric_label,
+                        metric_kind = excluded.metric_kind
+                    """,
+                    metric_rows,
+                )
             conn.commit()
+
+    def _build_metric_rollup_rows(
+        self,
+        *,
+        hourly_bucket: str,
+        daily_bucket: str,
+        metric_key: str,
+        metric_label: str,
+        metric_kind: str,
+        latency_ms: float | None,
+        ok: bool,
+    ) -> list[tuple[str, str, str, str, str, int, int, float]]:
+        success_count = int(ok)
+        failure_count = int(not ok)
+        latency_sum_ms = float(latency_ms or 0)
+        return [
+            (
+                "hour",
+                hourly_bucket,
+                metric_key,
+                metric_label,
+                metric_kind,
+                success_count,
+                failure_count,
+                latency_sum_ms,
+            ),
+            (
+                "day",
+                daily_bucket,
+                metric_key,
+                metric_label,
+                metric_kind,
+                success_count,
+                failure_count,
+                latency_sum_ms,
+            ),
+        ]
 
     def prune_old_samples(self, retention_days: int) -> int:
         threshold = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
@@ -210,8 +302,16 @@ class Storage:
                 "DELETE FROM daily_incident_rollups WHERE bucket < ?",
                 (daily_threshold,),
             ).rowcount
+            metric_deleted = conn.execute(
+                """
+                DELETE FROM metric_latency_rollups
+                WHERE (bucket_type = 'hour' AND bucket < ?)
+                   OR (bucket_type = 'day' AND bucket < ?)
+                """,
+                (hourly_threshold, daily_threshold),
+            ).rowcount
             conn.commit()
-        return hourly_deleted + daily_deleted + incident_deleted
+        return hourly_deleted + daily_deleted + incident_deleted + metric_deleted
 
     def fetch_recent_samples(self, hours: int = 24 * 30) -> list[sqlite3.Row]:
         threshold = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
@@ -285,6 +385,36 @@ class Storage:
             "offline": int(row["offline_incidents"]),
             "degraded": int(row["degraded_incidents"]),
         }
+
+    def fetch_metric_latency_rollups(self, bucket_type: str, limit: int) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    bucket_type,
+                    bucket,
+                    metric_key,
+                    metric_label,
+                    metric_kind,
+                    success_count,
+                    failure_count,
+                    latency_sum_ms
+                FROM metric_latency_rollups
+                WHERE bucket_type = ?
+                ORDER BY bucket DESC, metric_key ASC
+                """,
+                (bucket_type,),
+            ).fetchall()
+
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(row["bucket"], []).append(row)
+
+        selected_buckets = sorted(grouped.keys())[-limit:]
+        flattened: list[sqlite3.Row] = []
+        for bucket in selected_buckets:
+            flattened.extend(grouped[bucket])
+        return flattened
 
     def get_runtime_settings(self, defaults: dict[str, int]) -> dict[str, int]:
         settings = defaults.copy()

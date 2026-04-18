@@ -127,6 +127,163 @@ def _build_chart_series(graph_retention_days: int) -> tuple[list[dict], list[dic
     return hourly_series, daily_series, featured_series
 
 
+def _build_featured_breakdown_windows(graph_retention_days: int) -> dict[str, list[dict]]:
+    hourly_rows = STORAGE.fetch_hourly_rollups(limit=24)
+    daily_rows = STORAGE.fetch_daily_rollups(limit=graph_retention_days)
+    return {
+        "12h": [
+            {
+                "bucket": datetime.fromisoformat(row["bucket"]).astimezone(ZoneInfo(SETTINGS.timezone)).strftime("%m-%d %H:00"),
+                "offline": row["offline"],
+                "dns_issue": row["dns_issue"],
+                "degraded": row["degraded"],
+                "total": row["issue_samples"],
+            }
+            for row in hourly_rows[-12:]
+        ],
+        "24h": [
+            {
+                "bucket": datetime.fromisoformat(row["bucket"]).astimezone(ZoneInfo(SETTINGS.timezone)).strftime("%m-%d %H:00"),
+                "offline": row["offline"],
+                "dns_issue": row["dns_issue"],
+                "degraded": row["degraded"],
+                "total": row["issue_samples"],
+            }
+            for row in hourly_rows
+        ],
+        "7d": [
+            {
+                "bucket": row["bucket"][5:],
+                "offline": row["offline"],
+                "dns_issue": row["dns_issue"],
+                "degraded": row["degraded"],
+                "total": row["issue_samples"],
+            }
+            for row in daily_rows[-7:]
+        ],
+        "30d": [
+            {
+                "bucket": row["bucket"][5:],
+                "offline": row["offline"],
+                "dns_issue": row["dns_issue"],
+                "degraded": row["degraded"],
+                "total": row["issue_samples"],
+            }
+            for row in daily_rows[-30:]
+        ],
+        "90d": [
+            {
+                "bucket": row["bucket"][5:],
+                "offline": row["offline"],
+                "dns_issue": row["dns_issue"],
+                "degraded": row["degraded"],
+                "total": row["issue_samples"],
+            }
+            for row in daily_rows[-90:]
+        ],
+        "180d": [
+            {
+                "bucket": row["bucket"][5:],
+                "offline": row["offline"],
+                "dns_issue": row["dns_issue"],
+                "degraded": row["degraded"],
+                "total": row["issue_samples"],
+            }
+            for row in daily_rows[-180:]
+        ],
+        "365d": [
+            {
+                "bucket": row["bucket"][5:],
+                "offline": row["offline"],
+                "dns_issue": row["dns_issue"],
+                "degraded": row["degraded"],
+                "total": row["issue_samples"],
+            }
+            for row in daily_rows[-365:]
+        ],
+    }
+
+
+def _build_latency_series(graph_retention_days: int) -> dict[str, dict]:
+    def group_rows_by_bucket(rows: list) -> list[list]:
+        grouped: dict[str, list] = {}
+        for row in rows:
+            grouped.setdefault(row["bucket"], []).append(row)
+        return [grouped[bucket] for bucket in sorted(grouped.keys())]
+
+    def trim_bucket_rows(rows: list, bucket_limit: int) -> list:
+        grouped_rows = group_rows_by_bucket(rows)
+        trimmed = grouped_rows[-bucket_limit:]
+        return [row for bucket_rows in trimmed for row in bucket_rows]
+
+    def build_payload(rows: list, bucket_type: str) -> dict:
+        grouped: dict[str, dict] = {}
+        order: list[str] = []
+        for row in rows:
+            bucket = row["bucket"]
+            metric_key = row["metric_key"]
+            if bucket not in grouped:
+                grouped[bucket] = {"bucket": bucket, "metrics": {}, "order": []}
+                order.append(bucket)
+            if metric_key not in grouped[bucket]["metrics"]:
+                grouped[bucket]["metrics"][metric_key] = row
+                grouped[bucket]["order"].append(metric_key)
+
+        series_index: dict[str, dict] = {}
+        for row in rows:
+            metric_key = row["metric_key"]
+            if metric_key not in series_index:
+                series_index[metric_key] = {
+                    "key": metric_key,
+                    "label": row["metric_label"],
+                    "kind": row["metric_kind"],
+                    "values": [],
+                }
+
+        timeline: list[dict] = []
+        for bucket in order:
+            point = grouped[bucket]
+            label = (
+                datetime.fromisoformat(bucket).astimezone(ZoneInfo(SETTINGS.timezone)).strftime("%m-%d %H:00")
+                if bucket_type == "hour"
+                else bucket[5:]
+            )
+            metrics = []
+            for metric_key, meta in series_index.items():
+                row = point["metrics"].get(metric_key)
+                if row:
+                    success_count = row["success_count"]
+                    avg_latency = round(row["latency_sum_ms"] / success_count, 1) if success_count else None
+                    failure_count = row["failure_count"]
+                else:
+                    avg_latency = None
+                    failure_count = 0
+                meta["values"].append(avg_latency)
+                metrics.append(
+                    {
+                        "label": meta["label"],
+                        "value": avg_latency,
+                        "ok": avg_latency is not None,
+                        "failures": int(failure_count),
+                    }
+                )
+            timeline.append({"bucket": label, "metrics": metrics})
+
+        return {"series": list(series_index.values()), "timeline": timeline}
+
+    hourly_rows = STORAGE.fetch_metric_latency_rollups("hour", 24)
+    daily_rows = STORAGE.fetch_metric_latency_rollups("day", graph_retention_days)
+    return {
+        "12h": build_payload(trim_bucket_rows(hourly_rows, 12), "hour"),
+        "24h": build_payload(hourly_rows, "hour"),
+        "7d": build_payload(trim_bucket_rows(daily_rows, 7), "day"),
+        "30d": build_payload(trim_bucket_rows(daily_rows, 30), "day"),
+        "90d": build_payload(trim_bucket_rows(daily_rows, 90), "day"),
+        "180d": build_payload(trim_bucket_rows(daily_rows, 180), "day"),
+        "365d": build_payload(trim_bucket_rows(daily_rows, 365), "day"),
+    }
+
+
 @app.get("/")
 def index():
     runtime = STORAGE.get_runtime_settings(RUNTIME_DEFAULTS)
@@ -149,7 +306,9 @@ def api_summary():
         for row in STORAGE.fetch_status_counts_last_24h()
     ]
     incidents = _build_incidents(samples)
-    hourly_series, daily_series, featured_series = _build_chart_series(runtime["graph_retention_days"])
+    hourly_series, daily_series, _ = _build_chart_series(runtime["graph_retention_days"])
+    featured_windows = _build_featured_breakdown_windows(runtime["graph_retention_days"])
+    latency_series = _build_latency_series(runtime["graph_retention_days"])
     storage_stats = STORAGE.fetch_sample_storage_stats()
     incident_windows = [
         STORAGE.fetch_incident_totals(30),
@@ -162,7 +321,8 @@ def api_summary():
             "incidents": incidents,
             "hourly_issues": hourly_series,
             "daily_issues": daily_series,
-            "featured_daily_breakdown": featured_series,
+            "featured_windows": featured_windows,
+            "latency_series": latency_series,
             "incident_windows": incident_windows,
             "settings": runtime,
             "storage": storage_stats,
