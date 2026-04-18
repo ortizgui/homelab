@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Netpulse</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Monitor de conectividade</p>
+          <h1>Netpulse</h1>
+          <p class="lede">
+            Painel simples para acompanhar quedas de internet e separar falhas de DNS de falhas reais de conectividade.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <div class="stat-card">
+            <span class="label">Intervalo</span>
+            <strong>{{ poll_interval }}s</strong>
+          </div>
+          <div class="stat-card">
+            <span class="label">Logs brutos</span>
+            <strong id="hero-log-days">{{ runtime.log_retention_days }} dias</strong>
+          </div>
+          <div class="stat-card">
+            <span class="label">Gráficos</span>
+            <strong id="hero-graph-days">{{ runtime.graph_retention_days }} dias</strong>
+          </div>
+          <div class="stat-card">
+            <span class="label">Limite de logs</span>
+            <strong id="hero-log-size">{{ runtime.log_max_size_mb }} MB</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel status-panel">
+          <h2>Status atual</h2>
+          <div id="status-badge" class="status-badge">Carregando</div>
+          <p id="status-text" class="muted">Aguardando primeira coleta.</p>
+          <div id="checks" class="checks"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Últimas 24h</h2>
+          <div id="summary-cards" class="summary-cards"></div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Problemas por hora</h2>
+          <div id="hourly-chart" class="chart"></div>
+        </article>
+        <article class="panel">
+          <h2>Problemas por dia</h2>
+          <div id="daily-chart" class="chart"></div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Incidentes por tipo</h2>
+        <div id="incident-windows" class="incident-windows"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Configuração de retenção</h2>
+          <p class="muted">Os logs brutos giram por tempo ou tamanho. Os gráficos usam dados agregados, mais leves.</p>
+        </div>
+        <form id="settings-form" class="settings-form">
+          <label>
+            <span>Dias máximos dos logs brutos</span>
+            <input id="log-retention-days" type="number" min="1" value="{{ runtime.log_retention_days }}">
+          </label>
+          <label>
+            <span>Tamanho máximo dos logs brutos (MB)</span>
+            <input id="log-max-size-mb" type="number" min="10" value="{{ runtime.log_max_size_mb }}">
+          </label>
+          <label>
+            <span>Dias dos dados agregados do gráfico</span>
+            <input id="graph-retention-days" type="number" min="7" value="{{ runtime.graph_retention_days }}">
+          </label>
+          <button type="submit">Salvar políticas</button>
+        </form>
+        <p id="settings-feedback" class="muted">Esses valores ficam salvos no banco do Netpulse.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Incidentes recentes</h2>
+        <div id="incidents" class="incidents"></div>
+      </section>
+    </main>
+
+    <script>
+      const labels = {
+        healthy: "Saudável",
+        dns_issue: "Falha de DNS",
+        offline: "Sem internet",
+        degraded: "Degradado",
+      };
+
+      function renderChart(targetId, data) {
+        const target = document.getElementById(targetId);
+        if (!data.length) {
+          target.innerHTML = '<p class="muted">Sem problemas registrados no período.</p>';
+          return;
+        }
+
+        const max = Math.max(...data.map((item) => item.count), 1);
+        target.innerHTML = data.map((item) => `
+          <div class="bar-row">
+            <span>${item.bucket}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${(item.count / max) * 100}%"></div></div>
+            <strong>${item.count}</strong>
+          </div>
+        `).join('');
+      }
+
+      function renderChecks(sample) {
+        const checks = [];
+        for (const item of sample.tcp_results) {
+          checks.push(`<div class="check ${item.ok ? 'ok' : 'fail'}"><span>TCP ${item.target}</span><strong>${item.ok ? item.latency_ms + ' ms' : 'falhou'}</strong></div>`);
+        }
+        for (const item of sample.dns_results) {
+          checks.push(`<div class="check ${item.ok ? 'ok' : 'fail'}"><span>DNS ${item.resolver}</span><strong>${item.ok ? item.latency_ms + ' ms' : 'falhou'}</strong></div>`);
+        }
+        document.getElementById('checks').innerHTML = checks.join('');
+      }
+
+      function renderSummaryCards(items) {
+        const container = document.getElementById('summary-cards');
+        if (!items.length) {
+          container.innerHTML = '<p class="muted">Ainda sem histórico suficiente.</p>';
+          return;
+        }
+        container.innerHTML = items.map((item) => `
+          <div class="mini-card">
+            <span>${labels[item.status] || item.status}</span>
+            <strong>${item.total}</strong>
+          </div>
+        `).join('');
+      }
+
+      function renderIncidents(incidents) {
+        const container = document.getElementById('incidents');
+        if (!incidents.length) {
+          container.innerHTML = '<p class="muted">Nenhum incidente recente.</p>';
+          return;
+        }
+        container.innerHTML = incidents.map((item) => `
+          <div class="incident">
+            <div>
+              <strong>${labels[item.status] || item.status}</strong>
+              <p>${item.started_at_local} até ${item.ended_at_local}</p>
+            </div>
+            <span>${Math.max(1, Math.round(item.duration_seconds / 60))} min</span>
+          </div>
+        `).join('');
+      }
+
+      function renderIncidentWindows(windows) {
+        const container = document.getElementById('incident-windows');
+        if (!windows.length) {
+          container.innerHTML = '<p class="muted">Sem dados agregados suficientes.</p>';
+          return;
+        }
+        container.innerHTML = windows.map((window) => `
+          <article class="window-card">
+            <div class="window-header">
+              <strong>Ultimos ${window.days} dias</strong>
+              <span>${window.total} incidentes</span>
+            </div>
+            <div class="window-stats">
+              <div class="mini-card danger">
+                <span>Offline</span>
+                <strong>${window.offline}</strong>
+              </div>
+              <div class="mini-card warn">
+                <span>DNS</span>
+                <strong>${window.dns_issue}</strong>
+              </div>
+              <div class="mini-card caution">
+                <span>Degradado</span>
+                <strong>${window.degraded}</strong>
+              </div>
+            </div>
+          </article>
+        `).join('');
+      }
+
+      function renderSettings(data) {
+        document.getElementById('log-retention-days').value = data.log_retention_days;
+        document.getElementById('log-max-size-mb').value = data.log_max_size_mb;
+        document.getElementById('graph-retention-days').value = data.graph_retention_days;
+        document.getElementById('hero-log-days').textContent = `${data.log_retention_days} dias`;
+        document.getElementById('hero-graph-days').textContent = `${data.graph_retention_days} dias`;
+        document.getElementById('hero-log-size').textContent = `${data.log_max_size_mb} MB`;
+      }
+
+      function renderStorage(storage) {
+        const feedback = document.getElementById('settings-feedback');
+        const usedMb = (storage.sample_bytes / (1024 * 1024)).toFixed(2);
+        feedback.textContent = `Logs atuais: ${storage.sample_count} amostras, ${usedMb} MB.`;
+      }
+
+      async function refresh() {
+        const response = await fetch('/api/summary');
+        const data = await response.json();
+
+        const latest = data.latest;
+        const badge = document.getElementById('status-badge');
+        const text = document.getElementById('status-text');
+        if (!latest) {
+          badge.textContent = 'Sem dados';
+          badge.className = 'status-badge unknown';
+          text.textContent = 'Aguardando a primeira amostra.';
+          return;
+        }
+
+        badge.textContent = labels[latest.status] || latest.status;
+        badge.className = `status-badge ${latest.status}`;
+        text.textContent = `Última coleta em ${latest.ts_local}, host DNS consultado: ${latest.dns_hostname}.`;
+
+        renderChecks(latest);
+        renderSummaryCards(data.status_counts_24h);
+        renderChart('hourly-chart', data.hourly_issues);
+        renderChart('daily-chart', data.daily_issues);
+        renderIncidentWindows(data.incident_windows);
+        renderIncidents(data.incidents);
+        renderSettings(data.settings);
+        renderStorage(data.storage);
+      }
+
+      async function saveSettings(event) {
+        event.preventDefault();
+        const feedback = document.getElementById('settings-feedback');
+        feedback.textContent = 'Salvando...';
+
+        const response = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            log_retention_days: Number(document.getElementById('log-retention-days').value),
+            log_max_size_mb: Number(document.getElementById('log-max-size-mb').value),
+            graph_retention_days: Number(document.getElementById('graph-retention-days').value),
+          }),
+        });
+
+        if (!response.ok) {
+          feedback.textContent = 'Nao foi possivel salvar agora.';
+          return;
+        }
+
+        const data = await response.json();
+        renderSettings(data.settings);
+        feedback.textContent = 'Politicas salvas com sucesso.';
+        await refresh();
+      }
+
+      document.getElementById('settings-form').addEventListener('submit', saveSettings);
+      refresh();
+      setInterval(refresh, 15000);
+    </script>
+  </body>
+</html>

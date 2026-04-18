@@ -33,6 +33,8 @@ cloud_backup/data/*
 !cloud_backup/data/restore/.gitkeep
 !cloud_backup/data/restic-cache/.gitkeep
 !cloud_backup/data/state/.gitkeep
+netpulse/data/*
+!netpulse/data/.gitkeep
 cloud_backup/diagnostics/*
 
 **/diagnostics/*

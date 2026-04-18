@@ -8,6 +8,7 @@ Este repositório centraliza componentes independentes, mas complementares, para
 
 - `cloud_backup`: stack de backup criptografado com `restic + rclone`, API local, agendamento e interface web.
 - `disk-health`: monitoramento de discos e RAID com SMART, `mdadm` e alertas no Telegram.
+- `netpulse`: monitoramento leve de conectividade e falhas de DNS com dashboard local.
 - `tailscale`: acesso remoto seguro à rede local via Tailscale em Docker.
 - `tailscale_isolated`: variação enxuta do setup Tailscale para cenários isolados.
 
@@ -16,6 +17,7 @@ Este repositório centraliza componentes independentes, mas complementares, para
 - Backup criptografado com validações de segurança antes de qualquer alteração em nuvem.
 - Agendamento de rotinas de backup, retenção e prune.
 - Monitoramento de saúde de discos com alertas automáticos.
+- Monitoramento histórico de disponibilidade de internet e falhas de DNS.
 - Exposição segura da LAN via VPN sem abrir portas na internet.
 - Organização modular, com documentação própria por serviço.
 
@@ -26,6 +28,7 @@ homelab/
 ├── cloud_backup/        # Backup com restic + rclone + web UI
 ├── diagnostics/         # Espaço reservado para diagnósticos e utilitários
 ├── disk-health/         # Monitor SMART/RAID com alertas
+├── netpulse/            # Monitor de conectividade e DNS com dashboard local
 ├── tailscale/           # Tailscale com subnet router/exit node
 └── tailscale_isolated/  # Variante simplificada do Tailscale
 ```
@@ -76,6 +79,18 @@ cd /Volumes/homeX/git/homelab/tailscale
 cp .env.example .env
 docker compose up -d
 ```
+
+### Netpulse
+
+```bash
+cd /Volumes/homeX/git/homelab/netpulse
+cp .env.example .env
+docker compose up -d --build
+```
+
+Depois, acesse:
+
+- Dashboard: [http://localhost:8097](http://localhost:8097)
 
 ## Configurações
 
@@ -147,6 +162,26 @@ Parâmetros mais importantes:
 | `TS_HOSTNAME` | Nome do dispositivo na malha Tailscale |
 | `TS_EXTRA_ARGS` | Flags extras, como subnet router, exit node e DNS |
 
+### Netpulse
+
+Arquivo principal:
+
+- [`netpulse/.env`](/Volumes/homeX/git/homelab/netpulse/.env)
+
+Parâmetros mais importantes:
+
+| Variável | Descrição |
+| --- | --- |
+| `NETPULSE_PORT` | Porta exposta pelo dashboard |
+| `NETPULSE_DATA_DIR` | Diretório persistente com SQLite |
+| `NETPULSE_POLL_INTERVAL_SECONDS` | Intervalo entre coletas |
+| `NETPULSE_LOG_RETENTION_DAYS` | Retenção dos logs brutos |
+| `NETPULSE_LOG_MAX_SIZE_MB` | Limite de tamanho dos logs brutos |
+| `NETPULSE_GRAPH_RETENTION_DAYS` | Retenção do histórico agregado dos gráficos |
+| `NETPULSE_DNS_HOSTNAME` | Hostname consultado nos testes DNS |
+| `NETPULSE_DNS_RESOLVERS` | Lista de resolvedores para comparação |
+| `NETPULSE_TCP_TARGETS` | Lista de alvos TCP para validar conectividade IP |
+
 Exemplo comum de `TS_EXTRA_ARGS`:
 
 ```ini
@@ -193,6 +228,20 @@ TS_HOSTNAME=orangepi
 TS_EXTRA_ARGS=--advertise-exit-node --advertise-routes=192.168.68.0/24 --accept-dns=false
 ```
 
+### Exemplo 5: Netpulse com persistência fora do repositório
+
+```env
+# netpulse/.env
+NETPULSE_PORT=8097
+NETPULSE_DATA_DIR=/mnt/m2/docker/netpulse
+NETPULSE_POLL_INTERVAL_SECONDS=30
+NETPULSE_LOG_RETENTION_DAYS=30
+NETPULSE_LOG_MAX_SIZE_MB=100
+NETPULSE_GRAPH_RETENTION_DAYS=180
+NETPULSE_DNS_RESOLVERS=1.1.1.1,8.8.8.8
+NETPULSE_TCP_TARGETS=1.1.1.1:53,8.8.8.8:53
+```
+
 ## Documentação Por Módulo
 
 Cada componente possui documentação específica:
@@ -200,6 +249,7 @@ Cada componente possui documentação específica:
 - [`cloud_backup/README.md`](/Volumes/homeX/git/homelab/cloud_backup/README.md)
 - [`cloud_backup/DIRECTORY_STRUCTURE.md`](/Volumes/homeX/git/homelab/cloud_backup/DIRECTORY_STRUCTURE.md)
 - [`disk-health/README.md`](/Volumes/homeX/git/homelab/disk-health/README.md)
+- [`netpulse/README.md`](/Volumes/homeX/git/homelab/netpulse/README.md)
 - [`tailscale/README.md`](/Volumes/homeX/git/homelab/tailscale/README.md)
 
 ## Segurança
