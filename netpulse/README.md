@@ -62,6 +62,30 @@ Depois acesse:
 
 - Dashboard: [http://localhost:8097](http://localhost:8097)
 
+## Reparo Do Banco
+
+Se você subir uma versão nova com tabelas agregadas adicionais e quiser reconstruir o histórico sem perder o banco persistente, rode:
+
+```bash
+cd /Volumes/homeX/git/homelab/netpulse
+python3 scripts/repair_db.py
+```
+
+O script:
+
+- lê automaticamente o `.env` do projeto
+- resolve `NETPULSE_DB_PATH` ou `NETPULSE_DATA_DIR`
+- garante que as tabelas novas existam
+- recria agregados horários e diários
+- recompõe incidentes por tipo
+- recompõe os agregados de latência de TCP e DNS a partir de `samples`
+
+Se preferir rodar dentro do container:
+
+```bash
+docker compose exec netpulse python /app/scripts/repair_db.py
+```
+
 ## Configuração
 
 Arquivo principal:
