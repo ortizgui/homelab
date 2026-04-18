@@ -187,7 +187,19 @@
 
       function getWindowOptionsFromWindows(windows) {
         const ordered = ["12h", "24h", "7d", "30d", "90d", "180d", "365d"];
-        return ordered.filter((key) => windows[key] && windows[key].length);
+        return ordered.filter((key) => {
+          const value = windows[key];
+          if (!value) {
+            return false;
+          }
+          if (Array.isArray(value)) {
+            return value.length > 0;
+          }
+          if (value.timeline && Array.isArray(value.timeline)) {
+            return value.timeline.length > 0;
+          }
+          return false;
+        });
       }
 
       function renderWindowSelector(options, selectedValue, dataAttribute) {
