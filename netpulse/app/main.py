@@ -97,9 +97,9 @@ def _build_incidents(samples: list[dict]) -> list[dict]:
     return list(reversed(incidents[-20:]))
 
 
-def _build_chart_series() -> tuple[list[dict], list[dict]]:
+def _build_chart_series(graph_retention_days: int) -> tuple[list[dict], list[dict], list[dict]]:
     hourly_rows = STORAGE.fetch_hourly_rollups(limit=24)
-    daily_rows = STORAGE.fetch_daily_rollups(limit=180)
+    daily_rows = STORAGE.fetch_daily_rollups(limit=graph_retention_days)
     hourly_series = [
         {
             "bucket": datetime.fromisoformat(row["bucket"]).astimezone(ZoneInfo(SETTINGS.timezone)).strftime("%m-%d %H:00"),
@@ -114,7 +114,17 @@ def _build_chart_series() -> tuple[list[dict], list[dict]]:
         }
         for row in daily_rows
     ]
-    return hourly_series, daily_series
+    featured_series = [
+        {
+            "bucket": row["bucket"][5:],
+            "offline": row["offline"],
+            "dns_issue": row["dns_issue"],
+            "degraded": row["degraded"],
+            "total": row["issue_samples"],
+        }
+        for row in daily_rows
+    ]
+    return hourly_series, daily_series, featured_series
 
 
 @app.get("/")
@@ -133,13 +143,13 @@ def api_summary():
     raw_samples = STORAGE.fetch_recent_samples()
     samples = [json.loads(row["details_json"]) for row in raw_samples]
     latest = _parse_row(STORAGE.fetch_latest_sample())
+    runtime = STORAGE.get_runtime_settings(RUNTIME_DEFAULTS)
     status_counts = [
         {"status": row["status"], "total": row["total"]}
         for row in STORAGE.fetch_status_counts_last_24h()
     ]
     incidents = _build_incidents(samples)
-    hourly_series, daily_series = _build_chart_series()
-    runtime = STORAGE.get_runtime_settings(RUNTIME_DEFAULTS)
+    hourly_series, daily_series, featured_series = _build_chart_series(runtime["graph_retention_days"])
     storage_stats = STORAGE.fetch_sample_storage_stats()
     incident_windows = [
         STORAGE.fetch_incident_totals(30),
@@ -152,6 +162,7 @@ def api_summary():
             "incidents": incidents,
             "hourly_issues": hourly_series,
             "daily_issues": daily_series,
+            "featured_daily_breakdown": featured_series,
             "incident_windows": incident_windows,
             "settings": runtime,
             "storage": storage_stats,

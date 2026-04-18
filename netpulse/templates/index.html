@@ -61,6 +61,21 @@
         </article>
       </section>
 
+      <section class="panel featured-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Panorama Visual Dos Problemas</h2>
+            <p class="muted">Area empilhada com destaque para a distribuicao de `offline`, `dns_issue` e `degraded` ao longo dos dias.</p>
+          </div>
+          <div class="featured-legend">
+            <span><i class="legend-swatch offline"></i>Offline</span>
+            <span><i class="legend-swatch dns"></i>DNS</span>
+            <span><i class="legend-swatch degraded"></i>Degradado</span>
+          </div>
+        </div>
+        <div id="featured-chart" class="featured-chart"></div>
+      </section>
+
       <section class="panel">
         <h2>Incidentes por tipo</h2>
         <div id="incident-windows" class="incident-windows"></div>
@@ -102,6 +117,7 @@
         offline: "Sem internet",
         degraded: "Degradado",
       };
+      let selectedFeaturedWindow = null;
 
       function renderChart(targetId, data) {
         const target = document.getElementById(targetId);
@@ -118,6 +134,177 @@
             <strong>${item.count}</strong>
           </div>
         `).join('');
+      }
+
+      function buildAreaPath(points, width, height) {
+        if (!points.length) {
+          return '';
+        }
+        const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ');
+        const base = [...points].reverse().map((point) => `L ${point.x.toFixed(2)} ${height.toFixed(2)}`).join(' ');
+        return `${line} ${base} Z`;
+      }
+
+      function getWindowOptions(maxDays) {
+        return [7, 30, 90, 180, 365].filter((days) => days <= maxDays);
+      }
+
+      function renderFeaturedWindowSelector(maxDays) {
+        const options = getWindowOptions(maxDays);
+        if (!selectedFeaturedWindow || !options.includes(selectedFeaturedWindow)) {
+          selectedFeaturedWindow = options.includes(30) ? 30 : options[options.length - 1];
+        }
+        return `
+          <div class="window-selector" role="tablist" aria-label="Janela do grafico">
+            ${options.map((days) => `
+              <button
+                type="button"
+                class="window-chip ${days === selectedFeaturedWindow ? 'active' : ''}"
+                data-featured-window="${days}"
+              >${days}d</button>
+            `).join('')}
+          </div>
+        `;
+      }
+
+      function renderFeaturedChart(items, maxDays) {
+        const target = document.getElementById('featured-chart');
+        if (!items.length) {
+          target.innerHTML = '<p class="muted">Sem dados agregados suficientes para o grafico.</p>';
+          return;
+        }
+
+        const options = getWindowOptions(maxDays);
+        if (!selectedFeaturedWindow || !options.includes(selectedFeaturedWindow)) {
+          selectedFeaturedWindow = options.includes(30) ? 30 : options[options.length - 1];
+        }
+        const scopedItems = items.slice(-selectedFeaturedWindow);
+        if (!scopedItems.length) {
+          target.innerHTML = '<p class="muted">Sem dados suficientes para a janela selecionada.</p>';
+          return;
+        }
+
+        const width = 1040;
+        const height = 280;
+        const padX = 18;
+        const padTop = 16;
+        const padBottom = 28;
+        const plotHeight = height - padTop - padBottom;
+        const plotWidth = width - padX * 2;
+        const maxTotal = Math.max(...scopedItems.map((item) => item.total), 1);
+        const scaleX = (index) => padX + (scopedItems.length === 1 ? plotWidth / 2 : (index / (scopedItems.length - 1)) * plotWidth);
+        const scaleY = (value) => padTop + plotHeight - (value / maxTotal) * plotHeight;
+
+        const offlinePoints = [];
+        const dnsPoints = [];
+        const degradedPoints = [];
+        const labels = [];
+        const hoverZones = [];
+
+        scopedItems.forEach((item, index) => {
+          const x = scaleX(index);
+          const offlineTop = item.offline;
+          const dnsTop = item.offline + item.dns_issue;
+          const degradedTop = item.offline + item.dns_issue + item.degraded;
+          offlinePoints.push({ x, y: scaleY(offlineTop) });
+          dnsPoints.push({ x, y: scaleY(dnsTop) });
+          degradedPoints.push({ x, y: scaleY(degradedTop) });
+          const previousX = index === 0 ? padX : scaleX(index - 1);
+          const nextX = index === scopedItems.length - 1 ? width - padX : scaleX(index + 1);
+          const zoneX = index === 0 ? padX : (previousX + x) / 2;
+          const zoneWidth = index === scopedItems.length - 1 ? (width - padX) - zoneX : ((x + nextX) / 2) - zoneX;
+          hoverZones.push(`
+            <rect
+              class="hover-zone"
+              x="${zoneX.toFixed(2)}"
+              y="${padTop}"
+              width="${Math.max(10, zoneWidth).toFixed(2)}"
+              height="${plotHeight}"
+              data-bucket="${item.bucket}"
+              data-offline="${item.offline}"
+              data-dns="${item.dns_issue}"
+              data-degraded="${item.degraded}"
+              data-total="${item.total}"
+              data-x="${x.toFixed(2)}"
+            ></rect>
+          `);
+          if (index === 0 || index === items.length - 1 || index % Math.max(1, Math.floor(items.length / 5)) === 0) {
+            labels.push(`<span style="left:${((x / width) * 100).toFixed(2)}%">${item.bucket}</span>`);
+          }
+        });
+
+        const gridLines = Array.from({ length: 4 }, (_, index) => {
+          const value = Math.round((maxTotal / 4) * (4 - index));
+          const y = padTop + (plotHeight / 4) * index;
+          return `
+            <line x1="${padX}" y1="${y}" x2="${width - padX}" y2="${y}" />
+            <text x="${padX}" y="${y - 6}">${value}</text>
+          `;
+        }).join('');
+
+        const svg = `
+          <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Grafico empilhado de problemas">
+            <g class="chart-grid">${gridLines}</g>
+            <path class="area degraded" d="${buildAreaPath(degradedPoints, width, height - padBottom)}"></path>
+            <path class="area dns" d="${buildAreaPath(dnsPoints, width, height - padBottom)}"></path>
+            <path class="area offline" d="${buildAreaPath(offlinePoints, width, height - padBottom)}"></path>
+            <line class="hover-line" x1="${padX}" y1="${padTop}" x2="${padX}" y2="${height - padBottom}" hidden></line>
+            <g class="hover-zones">${hoverZones.join('')}</g>
+          </svg>
+        `;
+
+        target.innerHTML = `
+          <div class="featured-frame">
+            ${renderFeaturedWindowSelector(maxDays)}
+            ${svg}
+            <div class="featured-labels">${labels.join('')}</div>
+            <div id="featured-tooltip" class="featured-tooltip" hidden></div>
+          </div>
+        `;
+
+        const frame = target.querySelector('.featured-frame');
+        const tooltip = target.querySelector('#featured-tooltip');
+        const hoverLine = target.querySelector('.hover-line');
+        const zones = target.querySelectorAll('.hover-zone');
+        const chips = target.querySelectorAll('[data-featured-window]');
+
+        function hideTooltip() {
+          tooltip.hidden = true;
+          hoverLine.setAttribute('hidden', '');
+        }
+
+        zones.forEach((zone) => {
+          zone.addEventListener('mouseenter', () => {
+            const x = Number(zone.dataset.x);
+            const offline = Number(zone.dataset.offline);
+            const dns = Number(zone.dataset.dns);
+            const degraded = Number(zone.dataset.degraded);
+            const total = Number(zone.dataset.total);
+            tooltip.innerHTML = `
+              <strong>${zone.dataset.bucket}</strong>
+              <span>Total: ${total}</span>
+              <span>Offline: ${offline}</span>
+              <span>DNS: ${dns}</span>
+              <span>Degradado: ${degraded}</span>
+            `;
+            tooltip.hidden = false;
+            const leftPercent = (x / width) * 100;
+            tooltip.style.left = `${Math.min(92, Math.max(8, leftPercent))}%`;
+            hoverLine.removeAttribute('hidden');
+            hoverLine.setAttribute('x1', x.toFixed(2));
+            hoverLine.setAttribute('x2', x.toFixed(2));
+          });
+
+          zone.addEventListener('mouseleave', hideTooltip);
+        });
+
+        frame.addEventListener('mouseleave', hideTooltip);
+        chips.forEach((chip) => {
+          chip.addEventListener('click', () => {
+            selectedFeaturedWindow = Number(chip.dataset.featuredWindow);
+            renderFeaturedChart(items, maxDays);
+          });
+        });
       }
 
       function renderChecks(sample) {
@@ -229,6 +416,7 @@
         renderSummaryCards(data.status_counts_24h);
         renderChart('hourly-chart', data.hourly_issues);
         renderChart('daily-chart', data.daily_issues);
+        renderFeaturedChart(data.featured_daily_breakdown, data.settings.graph_retention_days);
         renderIncidentWindows(data.incident_windows);
         renderIncidents(data.incidents);
         renderSettings(data.settings);
