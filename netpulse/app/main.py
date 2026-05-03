@@ -101,17 +101,57 @@ def _build_incidents(samples: list[dict]) -> list[dict]:
 def _build_chart_series(graph_retention_days: int) -> tuple[list[dict], list[dict], list[dict]]:
     hourly_rows = STORAGE.fetch_hourly_rollups(limit=24)
     daily_rows = STORAGE.fetch_daily_rollups(limit=graph_retention_days)
+    detail_hourly_rows = STORAGE.fetch_hourly_rollups(limit=graph_retention_days * 24)
+    daily_groups: dict[str, dict] = {}
+    daily_order: list[str] = []
+    for row in detail_hourly_rows:
+        local_bucket = datetime.fromisoformat(row["bucket"]).astimezone(ZoneInfo(SETTINGS.timezone))
+        day_key = local_bucket.strftime("%Y-%m-%d")
+        if day_key not in daily_groups:
+            daily_order.append(day_key)
+            daily_groups[day_key] = {
+                "date": day_key,
+                "bucket": local_bucket.strftime("%m-%d"),
+                "count": 0,
+                "offline": 0,
+                "dns_issue": 0,
+                "degraded": 0,
+                "hours": [],
+            }
+        day = daily_groups[day_key]
+        day["count"] += row["issue_samples"]
+        day["offline"] += row["offline"]
+        day["dns_issue"] += row["dns_issue"]
+        day["degraded"] += row["degraded"]
+        if row["issue_samples"]:
+            day["hours"].append(
+                {
+                    "bucket": local_bucket.strftime("%m-%d %H:00"),
+                    "count": row["issue_samples"],
+                    "offline": row["offline"],
+                    "dns_issue": row["dns_issue"],
+                    "degraded": row["degraded"],
+                }
+            )
     hourly_series = [
         {
             "bucket": datetime.fromisoformat(row["bucket"]).astimezone(ZoneInfo(SETTINGS.timezone)).strftime("%m-%d %H:00"),
             "count": row["issue_samples"],
+            "offline": row["offline"],
+            "dns_issue": row["dns_issue"],
+            "degraded": row["degraded"],
         }
         for row in hourly_rows
     ]
-    daily_series = [
+    daily_series = [daily_groups[day_key] for day_key in daily_order] or [
         {
+            "date": row["bucket"],
             "bucket": row["bucket"][5:],
             "count": row["issue_samples"],
+            "offline": row["offline"],
+            "dns_issue": row["dns_issue"],
+            "degraded": row["degraded"],
+            "hours": [],
         }
         for row in daily_rows
     ]

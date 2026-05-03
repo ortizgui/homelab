@@ -179,6 +179,48 @@
         return Math.max(1, Math.ceil((count / Math.max(max, 1)) * 4));
       }
 
+      function renderIssueBreakdown(item) {
+        return `
+          <span>${labels.offline}: ${item.offline || 0}</span>
+          <span>${labels.dns_issue}: ${item.dns_issue || 0}</span>
+          <span>${labels.degraded}: ${item.degraded || 0}</span>
+        `;
+      }
+
+      function renderDailyDetails(target, item) {
+        const details = target.querySelector('.issue-day-details');
+        if (!details) {
+          return;
+        }
+        const hours = item.hours || [];
+        if (!item.count) {
+          details.innerHTML = `<p class="muted">${item.bucket}: nenhum problema registrado.</p>`;
+          return;
+        }
+        details.innerHTML = `
+          <div class="issue-day-head">
+            <div>
+              <span>Detalhes de ${item.bucket}</span>
+              <strong>${item.count} problema${item.count === 1 ? '' : 's'}</strong>
+            </div>
+            <div class="issue-breakdown">
+              ${renderIssueBreakdown(item)}
+            </div>
+          </div>
+          <div class="issue-hour-list">
+            ${hours.length ? hours.map((hour) => `
+              <div class="issue-hour-row">
+                <strong>${hour.bucket.slice(-5)}</strong>
+                <span>${hour.count} problema${hour.count === 1 ? '' : 's'}</span>
+                <div class="issue-breakdown compact">
+                  ${renderIssueBreakdown(hour)}
+                </div>
+              </div>
+            `).join('') : '<p class="muted">Sem detalhe horário para esse dia.</p>'}
+          </div>
+        `;
+      }
+
       function renderIssueHeatmap(targetId, data, mode) {
         const target = document.getElementById(targetId);
         if (!data.length) {
@@ -192,17 +234,21 @@
         const peak = data.reduce((best, item) => item.count > best.count ? item : best, data[0]);
         const unitLabel = mode === 'hourly' ? 'hora' : 'dia';
         const peakLabel = peak.count ? peak.bucket : 'sem pico';
-        const cells = data.map((item) => {
+        const cells = data.map((item, index) => {
           const level = getIssueIntensity(item.count, max);
+          const title = item.count
+            ? `${item.bucket}: ${item.count} problema${item.count === 1 ? '' : 's'} | ${labels.offline}: ${item.offline || 0}, ${labels.dns_issue}: ${item.dns_issue || 0}, ${labels.degraded}: ${item.degraded || 0}`
+            : `${item.bucket}: sem problemas`;
           return `
-            <span
+            <button
+              type="button"
               class="issue-cell level-${level}"
-              role="listitem"
-              title="${item.bucket}: ${item.count} problema${item.count === 1 ? '' : 's'}"
-              aria-label="${item.bucket}: ${item.count} problema${item.count === 1 ? '' : 's'}"
+              data-issue-index="${index}"
+              title="${title}"
+              aria-label="${title}"
             >
               ${mode === 'daily' ? `<small>${item.bucket.slice(-2)}</small>` : ''}
-            </span>
+            </button>
           `;
         }).join('');
 
@@ -222,9 +268,10 @@
               <small>${peakLabel}</small>
             </div>
           </div>
-          <div class="issue-heatmap ${mode === 'hourly' ? 'hourly' : 'daily'}" role="list" aria-label="Problemas por ${unitLabel}">
+          <div class="issue-heatmap ${mode === 'hourly' ? 'hourly' : 'daily'}" aria-label="Problemas por ${unitLabel}">
             ${cells}
           </div>
+          <div class="issue-tooltip" hidden></div>
           <div class="issue-scale" aria-hidden="true">
             <span>limpo</span>
             <i class="level-0"></i>
@@ -234,7 +281,33 @@
             <i class="level-4"></i>
             <span>pico</span>
           </div>
+          ${mode === 'daily' ? '<div class="issue-day-details"><p class="muted">Clique em um dia com ocorrência para ver os horários.</p></div>' : ''}
         `;
+
+        const tooltip = target.querySelector('.issue-tooltip');
+        target.querySelectorAll('.issue-cell').forEach((cell) => {
+          const item = data[Number(cell.dataset.issueIndex)];
+          cell.addEventListener('mouseenter', () => {
+            tooltip.innerHTML = `
+              <strong>${item.bucket}</strong>
+              <span>Total: ${item.count}</span>
+              ${item.count ? renderIssueBreakdown(item) : '<span>Sem problemas</span>'}
+            `;
+            tooltip.hidden = false;
+            tooltip.style.left = `${cell.offsetLeft + cell.offsetWidth / 2}px`;
+            tooltip.style.top = `${cell.offsetTop - 8}px`;
+          });
+          cell.addEventListener('mouseleave', () => {
+            tooltip.hidden = true;
+          });
+          cell.addEventListener('click', () => {
+            if (mode === 'daily') {
+              target.querySelectorAll('.issue-cell').forEach((itemCell) => itemCell.classList.remove('selected'));
+              cell.classList.add('selected');
+              renderDailyDetails(target, item);
+            }
+          });
+        });
       }
 
       function buildAreaPath(points, width, height) {
