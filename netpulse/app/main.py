@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
@@ -117,7 +117,6 @@ def _build_daily_events(samples: list[dict], poll_interval: int) -> dict[str, li
         current: dict | None = None
 
         def _nearest_event():
-            local_dt = datetime.fromisoformat(current["ended_at"]).astimezone(ZoneInfo(SETTINGS.timezone))
             current["duration_seconds"] = max(
                 0,
                 int(
@@ -129,6 +128,10 @@ def _build_daily_events(samples: list[dict], poll_interval: int) -> dict[str, li
             )
             if current["duration_seconds"] == 0 and current["total"] > 0:
                 current["duration_seconds"] = poll_interval
+                start_dt = datetime.fromisoformat(current["started_at"])
+                estimated_end = start_dt + timedelta(seconds=poll_interval)
+                current["ended_at"] = estimated_end.isoformat()
+                current["ended_at_local"] = estimated_end.astimezone(ZoneInfo(SETTINGS.timezone)).strftime("%H:%M:%S")
             return current
 
         for sample in day_samples:
