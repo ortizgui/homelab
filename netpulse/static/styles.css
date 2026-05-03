@@ -471,7 +471,7 @@ label span {
 }
 
 .issue-hour-row {
-  grid-template-columns: 52px 1fr 2fr;
+  grid-template-columns: auto auto auto 1fr;
   align-items: center;
   padding: 10px 12px;
   border: 1px solid var(--line);

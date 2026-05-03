@@ -30,14 +30,14 @@
               <p class="muted">Distribuição por causa provável: link fora, DNS com falha ou conexão instável.</p>
             </div>
             <div class="featured-legend">
-              <span title="TCP e DNS falharam. Provável queda de link ou rota externa."><i class="legend-swatch offline"></i>Internet fora</span>
+              <span title="TCP e DNS falharam. Provável queda de link ou rota externa."><i class="legend-swatch offline"></i>Offline</span>
               <span title="TCP responde, mas DNS falha. Provável problema no resolvedor DNS."><i class="legend-swatch dns"></i>Falha de DNS</span>
               <span title="Parte dos testes falha ou oscila. Provável instabilidade de rota, perda parcial ou latência ruim."><i class="legend-swatch degraded"></i>Instável</span>
             </div>
           </div>
           <div class="cause-guide" aria-label="Guia de causas prováveis">
             <div>
-              <strong>Internet fora</strong>
+              <strong>Offline</strong>
               <span>TCP e DNS falharam. Provável queda de link ou rota externa.</span>
             </div>
             <div>
@@ -95,7 +95,7 @@
           </article>
           <article class="panel issue-panel">
             <h2>Problemas por dia</h2>
-            <p class="muted">Calendário de recorrência por dia. Dias limpos ficam discretos; picos saltam rápido.</p>
+            <p class="muted">Calendário de recorrência por dia. Clique para ver início e fim de cada ocorrência.</p>
             <div id="daily-chart" class="issue-chart"></div>
           </article>
         </section>
@@ -151,7 +151,7 @@
       const labels = {
         healthy: "Saudável",
         dns_issue: "Falha de DNS",
-        offline: "Internet fora",
+        offline: "Offline",
         degraded: "Instável",
       };
       const issueCauses = {
@@ -192,11 +192,21 @@
         if (!details) {
           return;
         }
-        const hours = item.hours || [];
+        const events = item.events || [];
         if (!item.count) {
           details.innerHTML = `<p class="muted">${item.bucket}: nenhum problema registrado.</p>`;
           return;
         }
+        const eventRows = events.length ? events.map((evt) => `
+          <div class="issue-hour-row">
+            <strong>${evt.started_at_local}</strong>
+            <span>até ${evt.ended_at_local}</span>
+            <span>${Math.max(1, Math.round(evt.duration_seconds / 60))} min</span>
+            <div class="issue-breakdown compact">
+              ${renderIssueBreakdown(evt)}
+            </div>
+          </div>
+        `).join('') : '<p class="muted">Sem detalhe de início e fim disponível (logs brutos já expiraram).</p>';
         details.innerHTML = `
           <div class="issue-day-head">
             <div>
@@ -208,15 +218,7 @@
             </div>
           </div>
           <div class="issue-hour-list">
-            ${hours.length ? hours.map((hour) => `
-              <div class="issue-hour-row">
-                <strong>${hour.bucket.slice(-5)}</strong>
-                <span>${hour.count} problema${hour.count === 1 ? '' : 's'}</span>
-                <div class="issue-breakdown compact">
-                  ${renderIssueBreakdown(hour)}
-                </div>
-              </div>
-            `).join('') : '<p class="muted">Sem detalhe horário para esse dia.</p>'}
+            ${eventRows}
           </div>
         `;
       }
@@ -281,7 +283,7 @@
             <i class="level-4"></i>
             <span>pico</span>
           </div>
-          ${mode === 'daily' ? '<div class="issue-day-details"><p class="muted">Clique em um dia com ocorrência para ver os horários.</p></div>' : ''}
+          ${mode === 'daily' ? '<div class="issue-day-details"><p class="muted">Clique em um dia com ocorrência para ver início e fim.</p></div>' : ''}
         `;
 
         const tooltip = target.querySelector('.issue-tooltip');
@@ -693,15 +695,15 @@
             </div>
             <div class="window-stats">
               <div class="mini-card danger">
-                <span>Offline</span>
+                <span>${labels.offline}</span>
                 <strong>${window.offline}</strong>
               </div>
               <div class="mini-card warn">
-                <span>DNS</span>
+                <span>${labels.dns_issue}</span>
                 <strong>${window.dns_issue}</strong>
               </div>
               <div class="mini-card caution">
-                <span>Degradado</span>
+                <span>${labels.degraded}</span>
                 <strong>${window.degraded}</strong>
               </div>
             </div>

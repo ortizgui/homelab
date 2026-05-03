@@ -98,10 +98,91 @@ def _build_incidents(samples: list[dict]) -> list[dict]:
     return list(reversed(incidents[-20:]))
 
 
-def _build_chart_series(graph_retention_days: int) -> tuple[list[dict], list[dict], list[dict]]:
+def _build_daily_events(samples: list[dict], poll_interval: int) -> dict[str, list[dict]]:
+    events_by_day: dict[str, list[dict]] = {}
+    max_gap = poll_interval * 2.5
+
+    for sample in samples:
+        if sample["status"] == "healthy":
+            continue
+        local_dt = datetime.fromisoformat(sample["ts"]).astimezone(ZoneInfo(SETTINGS.timezone))
+        day_key = local_dt.strftime("%Y-%m-%d")
+        events_by_day.setdefault(day_key, []).append(sample)
+
+    result: dict[str, list[dict]] = {}
+
+    for day_key, day_samples in events_by_day.items():
+        day_samples.sort(key=lambda s: s["ts"])
+        events: list[dict] = []
+        current: dict | None = None
+
+        def _nearest_event():
+            local_dt = datetime.fromisoformat(current["ended_at"]).astimezone(ZoneInfo(SETTINGS.timezone))
+            current["duration_seconds"] = max(
+                0,
+                int(
+                    (
+                        datetime.fromisoformat(current["ended_at"])
+                        - datetime.fromisoformat(current["started_at"])
+                    ).total_seconds()
+                ),
+            )
+            if current["duration_seconds"] == 0 and current["total"] > 0:
+                current["duration_seconds"] = poll_interval
+            return current
+
+        for sample in day_samples:
+            local_dt = datetime.fromisoformat(sample["ts"]).astimezone(ZoneInfo(SETTINGS.timezone))
+            local_str = local_dt.strftime("%H:%M:%S")
+            if current is None:
+                current = {
+                    "started_at": sample["ts"],
+                    "started_at_local": local_str,
+                    "ended_at": sample["ts"],
+                    "ended_at_local": local_str,
+                    "offline": 0,
+                    "dns_issue": 0,
+                    "degraded": 0,
+                    "total": 0,
+                }
+            else:
+                prev_dt = datetime.fromisoformat(current["ended_at"]).astimezone(ZoneInfo(SETTINGS.timezone))
+                gap = (local_dt - prev_dt).total_seconds()
+                if gap > max_gap:
+                    events.append(_nearest_event())
+                    current = {
+                        "started_at": sample["ts"],
+                        "started_at_local": local_str,
+                        "ended_at": sample["ts"],
+                        "ended_at_local": local_str,
+                        "offline": 0,
+                        "dns_issue": 0,
+                        "degraded": 0,
+                        "total": 0,
+                    }
+                else:
+                    current["ended_at"] = sample["ts"]
+                    current["ended_at_local"] = local_str
+            current["offline"] += int(sample["status"] == "offline")
+            current["dns_issue"] += int(sample["status"] == "dns_issue")
+            current["degraded"] += int(sample["status"] == "degraded")
+            current["total"] += 1
+
+        if current is not None:
+            events.append(_nearest_event())
+
+        result[day_key] = events
+
+    return result
+
+
+def _build_chart_series(
+    samples: list[dict], graph_retention_days: int, poll_interval: int
+) -> tuple[list[dict], list[dict], list[dict]]:
     hourly_rows = STORAGE.fetch_hourly_rollups(limit=24)
     daily_rows = STORAGE.fetch_daily_rollups(limit=graph_retention_days)
     detail_hourly_rows = STORAGE.fetch_hourly_rollups(limit=graph_retention_days * 24)
+    events_by_day = _build_daily_events(samples, poll_interval)
     daily_groups: dict[str, dict] = {}
     daily_order: list[str] = []
     for row in detail_hourly_rows:
@@ -117,12 +198,14 @@ def _build_chart_series(graph_retention_days: int) -> tuple[list[dict], list[dic
                 "dns_issue": 0,
                 "degraded": 0,
                 "hours": [],
+                "events": [],
             }
         day = daily_groups[day_key]
         day["count"] += row["issue_samples"]
         day["offline"] += row["offline"]
         day["dns_issue"] += row["dns_issue"]
         day["degraded"] += row["degraded"]
+        day["events"] = events_by_day.get(day_key, [])
         if row["issue_samples"]:
             day["hours"].append(
                 {
@@ -152,6 +235,7 @@ def _build_chart_series(graph_retention_days: int) -> tuple[list[dict], list[dic
             "dns_issue": row["dns_issue"],
             "degraded": row["degraded"],
             "hours": [],
+            "events": events_by_day.get(row["bucket"], []),
         }
         for row in daily_rows
     ]
@@ -452,7 +536,7 @@ def api_summary():
         for row in STORAGE.fetch_status_counts_last_24h()
     ]
     incidents = _build_incidents(samples)
-    hourly_series, daily_series, _ = _build_chart_series(runtime["graph_retention_days"])
+    hourly_series, daily_series, _ = _build_chart_series(samples, runtime["graph_retention_days"], SETTINGS.poll_interval_seconds)
     featured_windows = _build_featured_breakdown_windows(runtime["graph_retention_days"], samples)
     latency_series = _build_latency_series(runtime["graph_retention_days"], samples)
     storage_stats = STORAGE.fetch_sample_storage_stats()
