@@ -524,7 +524,6 @@ async function loadRemoteQuota() {
       setSyncState("remoteQuota", "error");
       renderStatus();
     }
-    throw error;
   }
 }
 
@@ -572,7 +571,6 @@ async function loadLogs() {
 
 async function loadAll({ includeConfig = true } = {}) {
   const tasks = [
-    loadRemoteQuota(),
     loadSummary(),
     loadRuntime(),
     loadLogs(),
