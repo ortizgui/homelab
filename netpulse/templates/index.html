@@ -26,13 +26,27 @@
         <section class="panel featured-panel">
           <div class="panel-head">
             <div>
-              <h2>Panorama Visual Dos Problemas</h2>
-              <p class="muted">Área empilhada com destaque para a distribuição de `offline`, `dns_issue` e `degraded` ao longo dos dias.</p>
+              <h2>Panorama visual dos problemas</h2>
+              <p class="muted">Distribuição por causa provável: link fora, DNS com falha ou conexão instável.</p>
             </div>
             <div class="featured-legend">
-              <span><i class="legend-swatch offline"></i>Offline</span>
-              <span><i class="legend-swatch dns"></i>DNS</span>
-              <span><i class="legend-swatch degraded"></i>Degradado</span>
+              <span title="TCP e DNS falharam. Provável queda de link ou rota externa."><i class="legend-swatch offline"></i>Internet fora</span>
+              <span title="TCP responde, mas DNS falha. Provável problema no resolvedor DNS."><i class="legend-swatch dns"></i>Falha de DNS</span>
+              <span title="Parte dos testes falha ou oscila. Provável instabilidade de rota, perda parcial ou latência ruim."><i class="legend-swatch degraded"></i>Instável</span>
+            </div>
+          </div>
+          <div class="cause-guide" aria-label="Guia de causas prováveis">
+            <div>
+              <strong>Internet fora</strong>
+              <span>TCP e DNS falharam. Provável queda de link ou rota externa.</span>
+            </div>
+            <div>
+              <strong>Falha de DNS</strong>
+              <span>Internet responde, mas resolução de nomes falha.</span>
+            </div>
+            <div>
+              <strong>Instável</strong>
+              <span>Falha parcial, rota ruim, perda ou latência inconsistente.</span>
             </div>
           </div>
           <div id="featured-chart" class="featured-chart"></div>
@@ -137,8 +151,13 @@
       const labels = {
         healthy: "Saudável",
         dns_issue: "Falha de DNS",
-        offline: "Sem internet",
-        degraded: "Degradado",
+        offline: "Internet fora",
+        degraded: "Instável",
+      };
+      const issueCauses = {
+        offline: "TCP e DNS falharam. Provável queda de link ou rota externa.",
+        dns_issue: "TCP responde, mas DNS falha. Provável problema no resolvedor DNS.",
+        degraded: "Falha parcial ou oscilação. Provável rota ruim, perda ou latência inconsistente.",
       };
       const latencyPalette = ["#bd5865", "#57a5d8", "#e09a49", "#7ec37a", "#b88cea", "#f2cc60"];
       let selectedDashboardWindow = null;
@@ -403,9 +422,12 @@
             tooltip.innerHTML = `
               <strong>${zone.dataset.bucket}</strong>
               <span>Total: ${zone.dataset.total}</span>
-              <span>Offline: ${zone.dataset.offline}</span>
-              <span>DNS: ${zone.dataset.dns}</span>
-              <span>Degradado: ${zone.dataset.degraded}</span>
+              <span>${labels.offline}: ${zone.dataset.offline}</span>
+              <small>${issueCauses.offline}</small>
+              <span>${labels.dns_issue}: ${zone.dataset.dns}</span>
+              <small>${issueCauses.dns_issue}</small>
+              <span>${labels.degraded}: ${zone.dataset.degraded}</span>
+              <small>${issueCauses.degraded}</small>
             `;
             tooltip.hidden = false;
             const leftPercent = (x / width) * 100;
