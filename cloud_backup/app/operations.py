@@ -4,13 +4,16 @@ import copy
 import json
 import re
 import os
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .configuration import load_config, log_dir, rclone_config_path, state_dir
+from .configuration import load_config, log_dir, rclone_config_path, read_rclone_config, state_dir
 from .runtime import (
     _RUN_LOCK,
     append_log,
@@ -26,6 +29,12 @@ from .runtime import (
     update_run_progress,
     utc_now,
 )
+
+
+_PREFLIGHT_CACHE: dict[str, Any] | None = None
+_PREFLIGHT_CACHE_TIME: float = 0
+_PREFLIGHT_CACHE_LOCK = threading.Lock()
+PREFLIGHT_CACHE_TTL = 900  # 15 minutes
 
 
 def build_restic_env(config: dict[str, Any]) -> dict[str, str]:
@@ -462,13 +471,67 @@ def os_access_read(path: Path) -> bool:
         return False
 
 
+def _get_preflight_cache() -> dict[str, Any] | None:
+    global _PREFLIGHT_CACHE, _PREFLIGHT_CACHE_TIME
+    with _PREFLIGHT_CACHE_LOCK:
+        if _PREFLIGHT_CACHE is None:
+            return None
+        if time.time() - _PREFLIGHT_CACHE_TIME > PREFLIGHT_CACHE_TTL:
+            _PREFLIGHT_CACHE = None
+            return None
+        return dict(_PREFLIGHT_CACHE)
+
+
+def _set_preflight_cache(payload: dict[str, Any]) -> None:
+    global _PREFLIGHT_CACHE, _PREFLIGHT_CACHE_TIME
+    with _PREFLIGHT_CACHE_LOCK:
+        _PREFLIGHT_CACHE = copy.deepcopy(payload)
+        _PREFLIGHT_CACHE_TIME = time.time()
+
+
+def _invalidate_preflight_cache() -> None:
+    global _PREFLIGHT_CACHE, _PREFLIGHT_CACHE_TIME
+    with _PREFLIGHT_CACHE_LOCK:
+        _PREFLIGHT_CACHE = None
+        _PREFLIGHT_CACHE_TIME = 0
+
+
+def check_rclone_token_expiry() -> dict[str, Any]:
+    config_text = read_rclone_config()
+    if not config_text.strip():
+        return {"ok": True, "message": "No rclone config to check"}
+    match = re.search(r'token\s*=\s*(\{.*?\})', config_text, re.DOTALL)
+    if not match:
+        return {"ok": True, "message": "No token field in rclone config (may use newer format)"}
+    try:
+        token = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {"ok": False, "message": "Invalid token JSON in rclone config"}
+    expiry_str = token.get("expiry")
+    if not expiry_str:
+        return {"ok": True, "message": "No expiry in token"}
+    try:
+        expiry = datetime.fromisoformat(expiry_str)
+    except (ValueError, TypeError):
+        return {"ok": False, "message": f"Cannot parse token expiry: {expiry_str}"}
+    now = datetime.now(timezone.utc)
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    remaining_secs = (expiry - now).total_seconds()
+    days_remaining = remaining_secs / 86400
+    if days_remaining < 0:
+        return {"ok": False, "expired": True, "days": round(abs(days_remaining), 1), "message": f"Token expired {abs(days_remaining):.1f} days ago. Run: rclone config reconnect gdrive:"}
+    if days_remaining < 7:
+        return {"ok": True, "warning": True, "days": round(days_remaining, 1), "message": f"Token expires in {days_remaining:.1f} days. Refresh soon."}
+    return {"ok": True, "days": round(days_remaining, 1), "message": f"Token valid for {days_remaining:.1f} more days"}
+
+
 def preflight(config: dict[str, Any] | None = None) -> dict[str, Any]:
     mark_dashboard_action("preflight", "started")
     cfg = config or load_config()
+
     mount_results = check_mounts(cfg)
     source_results = check_sources(cfg)
-    remote_result = check_remote_connectivity(cfg) if cfg["security"]["require_remote_connectivity"] else json_response(True, skipped=True)
-    repository_result = check_repository_access(cfg)
     disk_health_result = check_disk_health(cfg)
 
     failures = []
@@ -476,11 +539,33 @@ def preflight(config: dict[str, Any] | None = None) -> dict[str, Any]:
         failures.append("Expected mountpoint missing or not a directory")
     if any(item["critical_failure"] for item in source_results):
         failures.append("Source validation failed")
-    if not remote_result["ok"]:
-        failures.append("Remote connectivity failed")
     if not disk_health_result["ok"]:
         failures.append("Storage health gate failed")
-    if not repository_result["ok"]:
+
+    remote_result: dict[str, Any]
+    repository_result: dict[str, Any]
+    token_warning: dict[str, Any] | None = None
+
+    cached = _get_preflight_cache()
+    if cached and not failures:
+        remote_result = cached["remote_result"]
+        repository_result = cached["repository_result"]
+    else:
+        if not failures:
+            remote_result = check_remote_connectivity(cfg) if cfg["security"]["require_remote_connectivity"] else json_response(True, skipped=True)
+            repository_result = check_repository_access(cfg)
+            _set_preflight_cache({
+                "remote_result": remote_result,
+                "repository_result": repository_result,
+            })
+            token_warning = check_rclone_token_expiry()
+        else:
+            remote_result = json_response(True, skipped=True)
+            repository_result = json_response(True, skipped=True)
+
+    if not remote_result.get("ok") and "skipped" not in remote_result:
+        failures.append("Remote connectivity failed")
+    if not repository_result.get("ok"):
         failures.append("Repository access failed")
 
     report = json_response(
@@ -493,6 +578,9 @@ def preflight(config: dict[str, Any] | None = None) -> dict[str, Any]:
         repository_result=repository_result,
         disk_health_result=disk_health_result,
     )
+    if token_warning and not token_warning.get("ok"):
+        report["token_warning"] = token_warning
+
     append_log("preflight.jsonl", report)
     update_dashboard_cache(latest_preflight=report)
     mark_dashboard_action("preflight", "completed", ok=report["ok"])
@@ -909,20 +997,17 @@ def runtime_status() -> dict[str, Any]:
 
 def status() -> dict[str, Any]:
     recover_interrupted_backup()
-    config = load_config()
-    snapshots = list_snapshots()
-    stats = repository_stats()
-    gate = preflight(config)
     last_backup_file = state_dir() / "last_successful_backup.txt"
     last_backup = last_backup_file.read_text(encoding="utf-8").strip() if last_backup_file.exists() else None
+    cache = load_dashboard_cache()
+    gate = cache.get("latest_preflight") or preflight()
     return json_response(
         gate["ok"],
-        config=config,
         preflight=gate,
-        snapshots=snapshots.get("snapshots", []),
-        stats=stats.get("stats", {}),
         last_successful_backup=last_backup,
         current_run=current_run(),
+        latest_backup=cache.get("latest_backup"),
+        last_action=cache.get("last_action"),
     )
 
 

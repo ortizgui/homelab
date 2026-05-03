@@ -50,7 +50,7 @@ class ApiHandler(JsonHandler):
                 self.send_json(json_response(True, message="Configuration is valid"))
                 return
             if parsed.path == "/api/status":
-                self.send_json(engine_request("GET", "/engine/status"))
+                self.send_json(cached_dashboard_summary())
                 return
             if parsed.path == "/api/summary":
                 self.send_json(cached_dashboard_summary())

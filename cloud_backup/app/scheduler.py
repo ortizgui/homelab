@@ -86,6 +86,7 @@ def clear_in_flight(name: str) -> None:
 
 def run_job(name: str, path: str, state_key: str) -> None:
     try:
+        print(f"[scheduler] {name} job started (key={state_key})")
         response = trigger(
             path,
             {"tag": "scheduled"} if name == "backup" else {},
@@ -95,16 +96,22 @@ def run_job(name: str, path: str, state_key: str) -> None:
             state = load_state()
             state[name] = state_key
             save_state(state)
-    except Exception:
-        # Keep the scheduler alive; the next matching window can retry.
-        pass
+            print(f"[scheduler] {name} OK at {state_key}")
+        else:
+            reasons = response.get("failures") or response.get("message") or "unknown"
+            print(f"[scheduler] {name} FAILED at {state_key}: {reasons}")
+    except Exception as exc:
+        print(f"[scheduler] {name} EXCEPTION at {state_key}: {exc}", file=__import__('sys').stderr)
     finally:
         clear_in_flight(name)
 
 
 def main() -> None:
+    print(f"[scheduler] started, check interval=30s")
+    cycle_count = 0
     while True:
         try:
+            cycle_count += 1
             now = datetime.now()
             config = load_config()
             state = load_state()
@@ -116,14 +123,16 @@ def main() -> None:
                 if not should_run(job, now, last_run):
                     continue
                 if current_run or in_flight(name):
+                    if cycle_count % 20 == 0:
+                        print(f"[scheduler] {name} ready but engine busy or in-flight (cycle={cycle_count})")
                     continue
                 state_key = now.strftime("%Y-%m-%dT%H:%M")
                 if not mark_in_flight(name):
                     continue
+                print(f"[scheduler] trigger {name} at {state_key}, path={path}")
                 Thread(target=run_job, args=(name, path, state_key), daemon=True).start()
-        except Exception:
-            # Avoid killing the scheduler loop on transient connectivity or runtime errors.
-            pass
+        except Exception as exc:
+            print(f"[scheduler] ERROR: {exc}", file=__import__('sys').stderr)
         time.sleep(30)
 
 
