@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import json
 import os
 import subprocess
@@ -16,6 +17,11 @@ from .configuration import log_dir
 _RUN_LOCK = threading.Lock()
 _RUN_STATE_LOCK = threading.Lock()
 _CURRENT_RUN: dict[str, Any] | None = None
+
+_LOG_BUFFER: dict[str, collections.deque] = {}
+_LOG_BUFFER_MAX = 300
+_MAX_LOG_SIZE = 1024 * 1024  # 1 MB
+_MAX_LOG_LINES = 500
 
 
 @dataclass
@@ -137,7 +143,29 @@ def append_log(name: str, payload: dict[str, Any]) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+    # Update in-memory buffer (fast read for UI)
+    if name not in _LOG_BUFFER:
+        _LOG_BUFFER[name] = collections.deque(maxlen=_LOG_BUFFER_MAX)
+    _LOG_BUFFER[name].append(payload)
+
+    # Truncate if file exceeds max size
+    try:
+        if target.stat().st_size > _MAX_LOG_SIZE:
+            _truncate_log(target, _MAX_LOG_LINES)
+    except OSError:
+        pass
     return target
+
+
+def _truncate_log(path: Path, keep_lines: int) -> None:
+    """Keep only last N lines of a JSONL file to bound disk usage."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if len(lines) > keep_lines:
+            path.write_text("\n".join(lines[-keep_lines:]) + "\n", encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        pass
 
 
 def begin_run(action: str, **details: Any) -> dict[str, Any] | None:
@@ -204,6 +232,13 @@ def interrupted_run() -> dict[str, Any] | None:
 
 
 def list_json_logs(name: str, limit: int = 200) -> list[dict[str, Any]]:
+    # Read from in-memory buffer when available (fast, no disk I/O)
+    buffer = _LOG_BUFFER.get(name)
+    if buffer is not None:
+        items = list(buffer)
+        return items[-limit:] if limit < len(items) else items
+
+    # Fallback: read from disk (first request after restart, or cold start)
     target = log_dir() / name
     if not target.exists():
         return []

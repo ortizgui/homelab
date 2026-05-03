@@ -77,3 +77,19 @@
 
 ### Related
 - [Decision: Restore & Download via Web UI](../decisions/007-restore-and-download.md)
+
+## [2026-05-03] Phase 1 Performance: Config Cache + Log Buffer
+
+### Changed
+- **Config cache (TTL 5s)**: `load_config()` caches parsed config in memory. Avoids disk read on every request (engine, api, scheduler all call it). `save_config()` invalidates cache immediately.
+- **In-memory log buffer**: `append_log()` writes to both disk (persistence) and in-memory `collections.deque` (max 300 entries). `list_json_logs()` reads from buffer — zero disk I/O for `/api/logs`.
+- **Log truncation**: `append_log()` checks file size after write. If > 1MB, truncates to last 500 lines. Prevents unbounded growth of `operations.jsonl` / `preflight.jsonl`.
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `app/configuration.py` | Config cache with TTL, split `load_config()` into cached wrapper + `_load_config_from_disk()` |
+| `app/runtime.py` | In-memory log buffer + truncation on append |
+
+### Related
+- [Decision: Preflight Remote Cache and Scheduler Logging](../decisions/006-preflight-cache.md)

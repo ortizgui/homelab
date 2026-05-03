@@ -3,8 +3,15 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
+
+_config_cache: dict[str, Any] | None = None
+_config_cache_time: float = 0
+_config_cache_lock = threading.Lock()
+CONFIG_CACHE_TTL = 5
 
 SCHEMA_VERSION = 1
 
@@ -135,6 +142,23 @@ def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_config() -> dict[str, Any]:
+    global _config_cache, _config_cache_time
+    with _config_cache_lock:
+        now = time.time()
+        if _config_cache is not None and now - _config_cache_time < CONFIG_CACHE_TTL:
+            return copy.deepcopy(_config_cache)
+
+    # If cache miss, load from disk (outside lock for perf)
+    cfg = _load_config_from_disk()
+
+    with _config_cache_lock:
+        _config_cache = copy.deepcopy(cfg)
+        _config_cache_time = time.time()
+    return cfg
+
+
+def _load_config_from_disk() -> dict[str, Any]:
+    """Internal: load config from disk without caching."""
     ensure_layout()
     path = config_path()
     if not path.exists():
@@ -152,6 +176,7 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any]) -> dict[str, Any]:
+    global _config_cache, _config_cache_time
     ensure_layout()
     normalized = copy.deepcopy(config)
     validate_config(normalized)
@@ -164,6 +189,11 @@ def save_config(config: dict[str, Any]) -> dict[str, Any]:
         rclone_config_path().write_text(rclone_text.strip() + "\n", encoding="utf-8")
     elif not rclone_config_path().exists():
         rclone_config_path().write_text("", encoding="utf-8")
+
+    # Invalidate cache so next load_config() re-reads
+    with _config_cache_lock:
+        _config_cache = None
+        _config_cache_time = 0
     return normalized
 
 
