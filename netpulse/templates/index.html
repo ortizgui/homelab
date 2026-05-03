@@ -74,13 +74,15 @@
         </section>
 
         <section class="grid">
-          <article class="panel">
+          <article class="panel issue-panel">
             <h2>Problemas por hora</h2>
-            <div id="hourly-chart" class="chart"></div>
+            <p class="muted">Mapa compacto das últimas 24 horas. Cor forte indica mais amostras com problema.</p>
+            <div id="hourly-chart" class="issue-chart"></div>
           </article>
-          <article class="panel">
+          <article class="panel issue-panel">
             <h2>Problemas por dia</h2>
-            <div id="daily-chart" class="chart"></div>
+            <p class="muted">Calendário de recorrência por dia. Dias limpos ficam discretos; picos saltam rápido.</p>
+            <div id="daily-chart" class="issue-chart"></div>
           </article>
         </section>
       </section>
@@ -151,7 +153,14 @@
         });
       }
 
-      function renderChart(targetId, data) {
+      function getIssueIntensity(count, max) {
+        if (!count) {
+          return 0;
+        }
+        return Math.max(1, Math.ceil((count / Math.max(max, 1)) * 4));
+      }
+
+      function renderIssueHeatmap(targetId, data, mode) {
         const target = document.getElementById(targetId);
         if (!data.length) {
           target.innerHTML = '<p class="muted">Sem problemas registrados no período.</p>';
@@ -159,13 +168,54 @@
         }
 
         const max = Math.max(...data.map((item) => item.count), 1);
-        target.innerHTML = data.map((item) => `
-          <div class="bar-row">
-            <span>${item.bucket}</span>
-            <div class="bar-track"><div class="bar-fill" style="width:${(item.count / max) * 100}%"></div></div>
-            <strong>${item.count}</strong>
+        const total = data.reduce((sum, item) => sum + item.count, 0);
+        const affected = data.filter((item) => item.count > 0).length;
+        const peak = data.reduce((best, item) => item.count > best.count ? item : best, data[0]);
+        const unitLabel = mode === 'hourly' ? 'hora' : 'dia';
+        const peakLabel = peak.count ? peak.bucket : 'sem pico';
+        const cells = data.map((item) => {
+          const level = getIssueIntensity(item.count, max);
+          return `
+            <span
+              class="issue-cell level-${level}"
+              role="listitem"
+              title="${item.bucket}: ${item.count} problema${item.count === 1 ? '' : 's'}"
+              aria-label="${item.bucket}: ${item.count} problema${item.count === 1 ? '' : 's'}"
+            >
+              ${mode === 'daily' ? `<small>${item.bucket.slice(-2)}</small>` : ''}
+            </span>
+          `;
+        }).join('');
+
+        target.innerHTML = `
+          <div class="issue-summary">
+            <div>
+              <span>Total</span>
+              <strong>${total}</strong>
+            </div>
+            <div>
+              <span>${mode === 'hourly' ? 'Horas afetadas' : 'Dias afetados'}</span>
+              <strong>${affected}/${data.length}</strong>
+            </div>
+            <div>
+              <span>Pico</span>
+              <strong>${peak.count ? peak.count : 0}</strong>
+              <small>${peakLabel}</small>
+            </div>
           </div>
-        `).join('');
+          <div class="issue-heatmap ${mode === 'hourly' ? 'hourly' : 'daily'}" role="list" aria-label="Problemas por ${unitLabel}">
+            ${cells}
+          </div>
+          <div class="issue-scale" aria-hidden="true">
+            <span>limpo</span>
+            <i class="level-0"></i>
+            <i class="level-1"></i>
+            <i class="level-2"></i>
+            <i class="level-3"></i>
+            <i class="level-4"></i>
+            <span>pico</span>
+          </div>
+        `;
       }
 
       function buildAreaPath(points, width, height) {
@@ -606,8 +656,8 @@
         renderChecks(latest);
         renderSummaryCards(data.status_counts_24h);
         renderIncidents(data.incidents);
-        renderChart('hourly-chart', data.hourly_issues);
-        renderChart('daily-chart', data.daily_issues);
+        renderIssueHeatmap('hourly-chart', data.hourly_issues, 'hourly');
+        renderIssueHeatmap('daily-chart', data.daily_issues, 'daily');
         renderSettings(data.settings);
         renderStorage(data.storage);
       }

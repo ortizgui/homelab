@@ -249,6 +249,144 @@ label span {
   background: linear-gradient(90deg, var(--accent), #50a89f);
 }
 
+.issue-panel h2 {
+  margin-bottom: 6px;
+}
+
+.issue-panel .muted {
+  margin-bottom: 14px;
+}
+
+.issue-chart {
+  display: grid;
+  gap: 14px;
+}
+
+.issue-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.issue-summary div {
+  min-height: 82px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.32)),
+    rgba(19, 111, 99, 0.06);
+}
+
+.issue-summary span,
+.issue-summary small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.issue-summary strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.issue-summary small {
+  margin-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.issue-heatmap {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(43, 35, 27, 0.06), rgba(43, 35, 27, 0.025)),
+    rgba(255, 255, 255, 0.38);
+}
+
+.issue-heatmap.hourly {
+  grid-template-columns: repeat(24, minmax(6px, 1fr));
+}
+
+.issue-heatmap.daily {
+  grid-template-columns: repeat(auto-fill, minmax(16px, 1fr));
+}
+
+.issue-cell,
+.issue-scale i {
+  border-radius: 7px;
+  border: 1px solid rgba(43, 35, 27, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+
+.issue-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.7rem;
+  cursor: help;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.issue-cell:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(60, 45, 30, 0.14);
+}
+
+.issue-heatmap.hourly .issue-cell {
+  min-height: 46px;
+}
+
+.issue-cell small {
+  opacity: 0.85;
+}
+
+.issue-cell.level-0 {
+  color: rgba(43, 35, 27, 0.52);
+}
+
+.level-0 {
+  background: rgba(19, 111, 99, 0.1);
+}
+
+.level-1 {
+  background: rgba(209, 123, 15, 0.32);
+}
+
+.level-2 {
+  background: rgba(209, 123, 15, 0.58);
+}
+
+.level-3 {
+  background: rgba(178, 58, 72, 0.68);
+}
+
+.level-4 {
+  background: linear-gradient(135deg, rgba(178, 58, 72, 0.92), rgba(103, 33, 47, 0.92));
+}
+
+.issue-scale {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.issue-scale i {
+  width: 18px;
+  height: 10px;
+  display: inline-block;
+}
+
 .featured-panel,
 .latency-panel {
   overflow: hidden;
@@ -563,6 +701,36 @@ label span {
   .incident,
   .bar-row {
     gap: 10px;
+  }
+
+  .issue-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .issue-summary div {
+    min-height: 0;
+  }
+
+  .issue-heatmap {
+    gap: 4px;
+    padding: 10px;
+  }
+
+  .issue-heatmap.hourly {
+    grid-template-columns: repeat(12, minmax(8px, 1fr));
+  }
+
+  .issue-heatmap.daily {
+    grid-template-columns: repeat(auto-fill, minmax(14px, 1fr));
+  }
+
+  .issue-heatmap.hourly .issue-cell {
+    min-height: 30px;
+  }
+
+  .issue-cell {
+    min-height: 20px;
+    border-radius: 6px;
   }
 
   .top-nav-link,
