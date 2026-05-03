@@ -307,3 +307,124 @@ pre {
     align-items: flex-start;
   }
 }
+
+/* ===== Restore & Download Browser ===== */
+.file-browser {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #fffdfa;
+  padding: 12px;
+  max-height: 400px;
+  overflow-y: auto;
+  font-size: 0.95rem;
+}
+
+.browser-path-bar {
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.browser-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.browser-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 8px;
+  cursor: default;
+}
+
+.browser-item:hover {
+  background: rgba(15, 118, 110, 0.06);
+}
+
+.browser-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+  border-radius: 6px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  user-select: none;
+}
+
+.browser-toggle:hover {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent);
+}
+
+.browser-toggle-empty {
+  visibility: hidden;
+}
+
+.browser-up {
+  color: var(--accent);
+  font-size: 1rem;
+}
+
+.browser-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.browser-check {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.browser-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.restore-selected-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  background: var(--accent-soft);
+}
+
+.download-link {
+  display: inline-block;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: white;
+  border-radius: 12px;
+  text-decoration: none;
+  font-weight: 600;
+  transition: transform 0.15s ease;
+}
+
+.download-link:hover {
+  transform: translateY(-1px);
+}
+
+/* Restore panel select styling */
+#restore-snapshot-select {
+  margin-bottom: 8px;
+}

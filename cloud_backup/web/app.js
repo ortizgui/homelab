@@ -757,4 +757,183 @@ document.addEventListener("DOMContentLoaded", async () => {
   } catch (error) {
     flash(error.message, "error");
   }
+
+  // ===== Restore & Download =====
+
+  let restoreSelectedPaths = new Set();
+  let currentSnapshotId = null;
+
+  async function loadSnapshotList() {
+    const sel = document.getElementById("restore-snapshot-select");
+    sel.innerHTML = '<option value="">— Loading snapshots —</option>';
+    try {
+      const payload = await api("/api/snapshots", { timeoutMs: 30000 });
+      const snapshots = payload.snapshots || [];
+      sel.innerHTML = '<option value="">— Select snapshot —</option>';
+      snapshots.forEach((snap) => {
+        const opt = document.createElement("option");
+        opt.value = snap.short_id || snap.id;
+        const time = formatTimestamp(snap.time) || snap.time || "?";
+        const tag = snap.tags ? ` [${snap.tags.join(", ")}]` : "";
+        const paths = snap.paths ? ` (${snap.paths.join(", ")})` : "";
+        opt.textContent = `${time}${tag}  —  ${(snap.short_id || snap.id).slice(0, 12)}${paths}`;
+        sel.appendChild(opt);
+      });
+    } catch (err) {
+      sel.innerHTML = '<option value="">— Failed to load —</option>';
+      flash(`Failed to load snapshots: ${err.message}`, "error");
+    }
+  }
+
+  function renderRestoreBrowser(snapshotId, entries, basePath) {
+    const container = document.getElementById("restore-browser");
+    container.innerHTML = "";
+
+    // Show current path
+    const pathBar = document.createElement("div");
+    pathBar.className = "browser-path-bar";
+    pathBar.innerHTML = `<span class="browser-path-label">📁 ${basePath}</span>`;
+    container.appendChild(pathBar);
+
+    if (!entries || entries.length === 0) {
+      container.innerHTML += '<p class="muted-copy">(empty directory)</p>';
+      return;
+    }
+
+    const list = document.createElement("ul");
+    list.className = "browser-list";
+
+    // Parent directory entry (unless at root)
+    if (basePath !== "/") {
+      const li = document.createElement("li");
+      li.className = "browser-item";
+      const parentPath = basePath.split("/").slice(0, -1).join("/") || "/";
+      li.innerHTML = `<span class="browser-toggle browser-up" data-path="${parentPath}">⬆</span>
+        <span class="browser-name">..</span>`;
+      li.querySelector(".browser-up").addEventListener("click", () => browseSnapshot(snapshotId, parentPath));
+      list.appendChild(li);
+    }
+
+    entries.forEach((entry) => {
+      const li = document.createElement("li");
+      li.className = "browser-item";
+      const icon = entry.type === "dir" ? "📁" : "📄";
+      const checked = restoreSelectedPaths.has(entry.path) ? "checked" : "";
+      li.innerHTML = `
+        ${entry.type === "dir"
+          ? `<span class="browser-toggle" data-path="${entry.path}">▶</span>`
+          : '<span class="browser-toggle browser-toggle-empty"></span>'}
+        <label class="browser-label">
+          <input type="checkbox" class="browser-check" data-path="${entry.path}" ${checked}>
+          <span class="browser-name">${icon} ${entry.name}</span>
+        </label>`;
+      if (entry.type === "dir") {
+        li.querySelector(".browser-toggle").addEventListener("click", (e) => {
+          browseSnapshot(snapshotId, entry.path);
+        });
+      }
+      li.querySelector(".browser-check").addEventListener("change", (e) => {
+        if (e.target.checked) {
+          restoreSelectedPaths.add(entry.path);
+        } else {
+          restoreSelectedPaths.delete(entry.path);
+        }
+        updateRestoreSelectedBar();
+      });
+      list.appendChild(li);
+    });
+
+    container.appendChild(list);
+  }
+
+  async function browseSnapshot(snapshotId, path) {
+    const container = document.getElementById("restore-browser");
+    container.innerHTML = '<p class="muted-copy">Loading...</p>';
+    try {
+      const payload = await api(`/api/browse-snapshot/${snapshotId}?path=${encodeURIComponent(path)}`, { timeoutMs: 30000 });
+      if (payload.ok) {
+        renderRestoreBrowser(snapshotId, payload.entries, payload.path);
+      } else {
+        container.innerHTML = `<p class="muted-copy">Error: ${payload.message || "Failed to list directory"}</p>`;
+      }
+    } catch (err) {
+      container.innerHTML = `<p class="muted-copy">Error: ${err.message}</p>`;
+      flash(`Browse failed: ${err.message}`, "error");
+    }
+  }
+
+  function updateRestoreSelectedBar() {
+    const bar = document.getElementById("restore-selected-bar");
+    const count = document.getElementById("restore-selected-count");
+    const btn = document.getElementById("run-restore-pack");
+    const total = restoreSelectedPaths.size;
+    count.textContent = `${total} item${total !== 1 ? "s" : ""} selected`;
+    if (total > 0 && currentSnapshotId) {
+      bar.classList.remove("hidden");
+      btn.disabled = false;
+    } else {
+      bar.classList.add("hidden");
+      btn.disabled = true;
+    }
+  }
+
+  async function runRestorePack() {
+    const btn = document.getElementById("run-restore-pack");
+    const status = document.getElementById("restore-pack-status");
+    const paths = Array.from(restoreSelectedPaths);
+    if (!currentSnapshotId || paths.length === 0) return;
+
+    btn.disabled = true;
+    btn.textContent = "Restoring...";
+    status.textContent = "Restore in progress. Large restores may take minutes...";
+
+    try {
+      const payload = await api("/api/actions/restore-pack", {
+        method: "POST",
+        body: JSON.stringify({
+          snapshot_id: currentSnapshotId,
+          paths: paths,
+          target_name: `restore_${currentSnapshotId.slice(0, 8)}`,
+        }),
+        timeoutMs: 60 * 60 * 1000, // 1 hour timeout
+      });
+      if (payload.ok) {
+        status.innerHTML = `Restore complete. <a href="${payload.download_url}" class="download-link" download>⬇ Download ${payload.file_name}</a> (${formatBytes(payload.file_size)})`;
+        flash("Restore completed. Click download link.", "info");
+      } else {
+        status.textContent = `Restore failed: ${payload.message || "Unknown error"}`;
+        flash("Restore failed.", "error");
+      }
+    } catch (err) {
+      status.textContent = `Error: ${err.message}`;
+      flash(`Restore error: ${err.message}`, "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "⬇ Restore & Download";
+    }
+  }
+
+  // Wire up restore panel events
+  document.getElementById("restore-snapshot-select").addEventListener("change", (e) => {
+    const snapId = e.target.value;
+    currentSnapshotId = snapId || null;
+    restoreSelectedPaths.clear();
+    updateRestoreSelectedBar();
+    if (snapId) {
+      browseSnapshot(snapId, "/");
+    } else {
+      document.getElementById("restore-browser").innerHTML = '<p class="muted-copy">Select a snapshot above to browse.</p>';
+    }
+  });
+
+  document.getElementById("run-restore-pack").addEventListener("click", runRestorePack);
+
+  // Hook into view switching — load snapshots when restore tab opens
+  document.querySelectorAll(".sidebar button[data-view]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.view === "restore") {
+        loadSnapshotList();
+      }
+    });
+  });
 });

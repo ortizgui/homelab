@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 from .configuration import coerce_import_config, export_bundle, load_config, save_config, validate_config
 from .http_utils import JsonHandler
@@ -83,6 +85,37 @@ class ApiHandler(JsonHandler):
                 suffix = f"?path={urllib.parse.quote(query)}" if query else ""
                 self.send_json(engine_request("GET", f"/engine/browse{suffix}"))
                 return
+            if parsed.path.startswith("/api/browse-snapshot/"):
+                snapshot_id = parsed.path[len("/api/browse-snapshot/"):]
+                query_path = self.query_params().get("path", [None])[0]
+                suffix = f"?path={urllib.parse.quote(query_path)}" if query_path else ""
+                self.send_json(engine_request("GET", f"/engine/browse-snapshot/{snapshot_id}{suffix}"))
+                return
+            if parsed.path.startswith("/api/restore-download/"):
+                file_name = parsed.path[len("/api/restore-download/"):]
+                config = load_config()
+                restore_root = Path(config["general"]["restore_root"]).resolve()
+                file_path = restore_root / file_name
+                if not file_path.exists() or not file_path.is_file():
+                    self.send_json(json_response(False, message="File not found"), status=HTTPStatus.NOT_FOUND)
+                    return
+                if not str(file_path.resolve()).startswith(str(restore_root)):
+                    self.send_json(json_response(False, message="Invalid file"), status=HTTPStatus.FORBIDDEN)
+                    return
+                try:
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "application/gzip")
+                    self.send_header("Content-Disposition", f'attachment; filename="{file_name}"')
+                    self.send_header("Content-Length", str(file_path.stat().st_size))
+                    self.end_headers()
+                    with open(file_path, "rb") as fh:
+                        import shutil
+                        shutil.copyfileobj(fh, self.wfile)
+                    file_path.unlink(missing_ok=True)
+                    return
+                except (BrokenPipeError, ConnectionResetError):
+                    file_path.unlink(missing_ok=True)
+                    return
             self.send_json(json_response(False, message="Not found"), status=HTTPStatus.NOT_FOUND)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8") or "{}"
@@ -131,6 +164,9 @@ class ApiHandler(JsonHandler):
                 return
             if parsed.path == "/api/actions/restore":
                 self.send_json(engine_request("POST", "/engine/restore", payload))
+                return
+            if parsed.path == "/api/actions/restore-pack":
+                self.send_json(engine_request("POST", "/engine/restore-pack", payload))
                 return
             self.send_json(json_response(False, message="Not found"), status=HTTPStatus.NOT_FOUND)
         except urllib.error.HTTPError as exc:

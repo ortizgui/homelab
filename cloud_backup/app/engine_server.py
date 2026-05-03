@@ -8,6 +8,7 @@ from .configuration import load_config
 from .http_utils import JsonHandler
 from .operations import (
     browse_path,
+    browse_snapshot,
     cached_dashboard_summary,
     dashboard_summary,
     healthcheck,
@@ -15,6 +16,7 @@ from .operations import (
     list_snapshots,
     preflight,
     repository_stats,
+    restore_and_pack,
     restore_snapshot,
     runtime_status,
     run_backup,
@@ -66,6 +68,11 @@ class EngineHandler(JsonHandler):
                 path = self.query_params().get("path", [None])[0]
                 self.send_json(browse_path(config, path))
                 return
+            if parsed.path.startswith("/engine/browse-snapshot/"):
+                snapshot_id = parsed.path[len("/engine/browse-snapshot/"):]
+                path = self.query_params().get("path", [None])[0] or "/"
+                self.send_json(browse_snapshot(snapshot_id, path))
+                return
             self.send_json(json_response(False, message="Not found"), status=HTTPStatus.NOT_FOUND)
         except Exception as exc:
             self.send_json(json_response(False, message=str(exc)), status=HTTPStatus.BAD_REQUEST)
@@ -85,6 +92,15 @@ class EngineHandler(JsonHandler):
                 return
             if parsed.path == "/engine/unlock":
                 self.send_json(unlock_repository())
+                return
+            if parsed.path == "/engine/restore-pack":
+                self.send_json(
+                    restore_and_pack(
+                        payload["snapshot_id"],
+                        payload.get("paths", []),
+                        payload.get("target_name"),
+                    )
+                )
                 return
             if parsed.path == "/engine/restore":
                 self.send_json(

@@ -905,6 +905,94 @@ def restore_snapshot(snapshot_id: str, target: str, include_path: str | None = N
     return payload
 
 
+def browse_snapshot(snapshot_id: str, path: str = "/") -> dict[str, Any]:
+    """List direct children of a path within a snapshot. Lazy-load friendly."""
+    config = load_config()
+    path = path.rstrip("/") or "/"
+    result = run_command(
+        ["restic", "ls", snapshot_id, str(path)],
+        env=build_restic_env(config),
+        timeout=60,
+    )
+    if result.code != 0:
+        stderr = (result.stderr or "").strip()
+        if "not found" in stderr.lower() or "does not exist" in stderr.lower():
+            return json_response(False, message="Snapshot not found", entries=[])
+        return json_response(False, message=f"Failed to list snapshot: {stderr}", entries=[])
+
+    prefix = str(path)
+    if not prefix.endswith("/"):
+        prefix += "/"
+
+    seen: dict[str, dict[str, Any]] = {}
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or line == str(path):
+            continue
+        if line.startswith(prefix):
+            rel = line[len(prefix):]
+        elif line == str(path) + "/":
+            continue
+        else:
+            continue
+        parts = rel.split("/", 1)
+        name = parts[0]
+        if not name:
+            continue
+        is_dir = len(parts) > 1 or line.endswith("/")
+        if name not in seen:
+            entry_path = f"{path.rstrip('/')}/{name}"
+            seen[name] = {"name": name, "type": "dir" if is_dir else "file", "path": entry_path}
+
+    entries = sorted(seen.values(), key=lambda x: (x["type"] != "dir", x["name"].lower()))
+    return json_response(True, entries=entries, path=path, snapshot_id=snapshot_id)
+
+
+def restore_and_pack(snapshot_id: str, paths: list[str], target_name: str | None = None) -> dict[str, Any]:
+    """Restore selected paths from snapshot, pack as tar.gz, return download info."""
+    config = load_config()
+    restore_root = Path(config["general"]["restore_root"]).resolve()
+    now_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', (target_name or f"restore_{snapshot_id[:8]}").strip() or "restore")
+    restore_dir = restore_root / f"{safe_name}_{now_str}"
+    restore_dir.mkdir(parents=True, exist_ok=True)
+
+    command = ["restic", "restore", snapshot_id, "--target", str(restore_dir)]
+    for p in paths:
+        command.extend(["--include", p])
+    result = run_command(command, env=build_restic_env(config), timeout=60 * 60 * 12)
+    if result.code != 0:
+        import shutil
+        shutil.rmtree(restore_dir, ignore_errors=True)
+        return json_response(False, message="Restore failed", stdout=result.stdout, stderr=result.stderr)
+
+    tar_name = f"{safe_name}_{now_str}.tar.gz"
+    tar_path = restore_root / tar_name
+    import subprocess
+    tar_result = subprocess.run(
+        ["tar", "-czf", str(tar_path), "-C", str(restore_dir), "."],
+        capture_output=True, text=True, timeout=60 * 60,
+    )
+    import shutil
+    shutil.rmtree(restore_dir, ignore_errors=True)
+    if tar_result.returncode != 0:
+        tar_path.unlink(missing_ok=True)
+        return json_response(False, message="Failed to create archive", stdout=tar_result.stdout, stderr=tar_result.stderr)
+
+    payload = json_response(
+        True,
+        action="restore-pack",
+        snapshot_id=snapshot_id,
+        paths=paths,
+        download_url=f"/api/restore-download/{tar_name}",
+        file_name=tar_name,
+        file_size=tar_path.stat().st_size,
+        message="Restore completed and packed for download",
+    )
+    append_log("operations.jsonl", payload)
+    return payload
+
+
 def list_logs(limit: int = 200) -> dict[str, Any]:
     files = []
     for item in sorted(log_dir().glob("*.jsonl")):
@@ -1044,3 +1132,14 @@ def healthcheck() -> dict[str, Any]:
             "last_successful_backup": runtime.get("last_successful_backup"),
         },
     )
+
+
+def cleanup_old_restore_packs(max_age_minutes: int = 60) -> None:
+    """Remove stale restore tar.gz files from restore_root."""
+    config = load_config()
+    restore_root = Path(config["general"]["restore_root"]).resolve()
+    now = time.time()
+    for f in restore_root.glob("*.tar.gz"):
+        age_secs = now - f.stat().st_mtime
+        if age_secs > max_age_minutes * 60:
+            f.unlink(missing_ok=True)

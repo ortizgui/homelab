@@ -140,15 +140,23 @@
 
         <section data-panel="restore" class="panel">
           <article class="card form-card">
-            <h3>Restore snapshot</h3>
-            <label>Snapshot ID <input id="restore-snapshot-id"></label>
-            <label>Restore target <input id="restore-target" value="/data/restore/manual-restore"></label>
-            <label>Optional include path <input id="restore-include"></label>
-            <button id="run-restore">Restore</button>
-          </article>
-          <article class="card">
-            <h3>Available snapshots</h3>
-            <pre id="restore-snapshots"></pre>
+            <h3>Restore & Download</h3>
+            <p>Select snapshot, browse files, choose items to restore.</p>
+            <label>Snapshot
+              <select id="restore-snapshot-select">
+                <option value="">— Loading snapshots —</option>
+              </select>
+            </label>
+            <label>Browse files
+              <div id="restore-browser" class="file-browser">
+                <p class="muted-copy">Select a snapshot above to browse.</p>
+              </div>
+            </label>
+            <div id="restore-selected-bar" class="restore-selected-bar hidden">
+              <span id="restore-selected-count">0 items selected</span>
+              <button id="run-restore-pack" class="primary" disabled>⬇ Restore &amp; Download</button>
+            </div>
+            <p id="restore-pack-status" class="muted-copy"></p>
           </article>
         </section>
 
