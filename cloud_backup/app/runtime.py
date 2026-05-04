@@ -238,9 +238,17 @@ def list_json_logs(name: str, limit: int = 200) -> list[dict[str, Any]]:
         items = list(buffer)
         return items[-limit:] if limit < len(items) else items
 
-    # Fallback: read from disk (first request after restart, or cold start)
+    # Fallback: read from disk, then pre-populate buffer for subsequent calls
     target = log_dir() / name
     if not target.exists():
         return []
-    lines = target.read_text(encoding="utf-8").splitlines()[-limit:]
-    return [json.loads(line) for line in lines if line.strip()]
+    raw_lines = target.read_text(encoding="utf-8").splitlines()
+    last_lines = raw_lines[-limit:]
+    entries = [json.loads(line) for line in last_lines if line.strip()]
+
+    # Pre-populate buffer so next calls avoid disk I/O
+    if name not in _LOG_BUFFER:
+        from_file = [json.loads(line) for line in raw_lines if line.strip()]
+        _LOG_BUFFER[name] = collections.deque(from_file, maxlen=_LOG_BUFFER_MAX)
+
+    return entries

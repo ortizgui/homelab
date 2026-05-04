@@ -997,10 +997,21 @@ def list_logs(limit: int = 200) -> dict[str, Any]:
     files = []
     for item in sorted(log_dir().glob("*.jsonl")):
         files.append({"name": item.name, "size": item.stat().st_size})
-    operations = []
+    operations: list[dict[str, Any]] = []
     ops_file = log_dir() / "operations.jsonl"
     if ops_file.exists():
-        operations = [json.loads(line) for line in ops_file.read_text(encoding="utf-8").splitlines()[-limit:] if line.strip()]
+        for line in ops_file.read_text(encoding="utf-8").splitlines()[-limit:]:
+            if not line.strip():
+                continue
+            entry: dict[str, Any] = json.loads(line)
+            # Trim large fields for UI display (full data kept on disk)
+            if isinstance(entry.get("stdout"), str) and len(entry["stdout"]) > 500:
+                entry["stdout"] = entry["stdout"][:500] + "..."
+            if isinstance(entry.get("stderr"), str) and len(entry["stderr"]) > 500:
+                entry["stderr"] = entry["stderr"][:500] + "..."
+            if isinstance(entry.get("command"), list):
+                entry["command"] = " ".join(entry["command"])[:300]
+            operations.append(entry)
     return json_response(True, files=files, operations=operations)
 
 
