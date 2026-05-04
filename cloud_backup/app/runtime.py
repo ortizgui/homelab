@@ -252,3 +252,21 @@ def list_json_logs(name: str, limit: int = 200) -> list[dict[str, Any]]:
         _LOG_BUFFER[name] = collections.deque(from_file, maxlen=_LOG_BUFFER_MAX)
 
     return entries
+
+
+# Startup: truncate oversized log files to bound disk & memory usage
+# Uses tail (reads from end efficiently) instead of loading whole file
+for _f_name in ("operations.jsonl", "preflight.jsonl"):
+    _f_path = log_dir() / _f_name
+    if _f_path.exists():
+        try:
+            if _f_path.stat().st_size > _MAX_LOG_SIZE:
+                import subprocess as _subprocess
+                _result = _subprocess.run(
+                    ["tail", "-n", str(_MAX_LOG_LINES), str(_f_path)],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if _result.returncode == 0 and _result.stdout:
+                    _f_path.write_text(_result.stdout, encoding="utf-8")
+        except Exception:
+            pass  # Non-fatal — log will truncate on next append_log()

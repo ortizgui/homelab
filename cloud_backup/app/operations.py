@@ -1000,7 +1000,14 @@ def list_logs(limit: int = 200) -> dict[str, Any]:
     operations: list[dict[str, Any]] = []
     ops_file = log_dir() / "operations.jsonl"
     if ops_file.exists():
-        for line in ops_file.read_text(encoding="utf-8").splitlines()[-limit:]:
+        raw_lines = ops_file.read_text(encoding="utf-8").splitlines()
+        # Truncate oversized log file (keeps ~500 lines, future reads stay fast)
+        if len(raw_lines) > 500:
+            from .runtime import _truncate_log, _MAX_LOG_LINES
+            _truncate_log(ops_file, _MAX_LOG_LINES)
+            raw_lines = raw_lines[-_MAX_LOG_LINES:]
+        last_lines = raw_lines[-limit:]
+        for line in last_lines:
             if not line.strip():
                 continue
             entry: dict[str, Any] = json.loads(line)
