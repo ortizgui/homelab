@@ -433,7 +433,10 @@ function renderStatus() {
     li.textContent = preflight ? "No blocked sources." : "Detailed source checks will appear after a successful status refresh.";
     preflightList.appendChild(li);
   }
-  document.getElementById("restore-snapshots").textContent = JSON.stringify(payload.snapshots || [], null, 2);
+  const restoreSnapshotsEl = document.getElementById("restore-snapshots");
+  if (restoreSnapshotsEl) {
+    restoreSnapshotsEl.textContent = JSON.stringify(payload.snapshots || [], null, 2);
+  }
 }
 
 function renderLogs() {
@@ -713,18 +716,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     flash(`Found ${payload.entries.length} directories under ${payload.path}.`);
   });
 
-  document.getElementById("run-restore").addEventListener("click", async () => {
-    const payload = await api("/api/actions/restore", {
-      method: "POST",
-      body: JSON.stringify({
-        snapshot_id: document.getElementById("restore-snapshot-id").value.trim(),
-        target: document.getElementById("restore-target").value.trim(),
-        include_path: document.getElementById("restore-include").value.trim() || undefined,
-      }),
-    });
-    flash(payload.ok ? "Restore completed." : "Restore failed.", payload.ok ? "info" : "error");
-    await loadAll();
-  });
 
   document.getElementById("export-config").addEventListener("click", async () => {
     const payload = await api("/api/config/export");

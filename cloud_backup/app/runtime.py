@@ -244,11 +244,17 @@ def list_json_logs(name: str, limit: int = 200) -> list[dict[str, Any]]:
         return []
     raw_lines = target.read_text(encoding="utf-8").splitlines()
     last_lines = raw_lines[-limit:]
-    entries = [json.loads(line) for line in last_lines if line.strip()]
+    def _safe_load(line: str) -> dict[str, Any] | None:
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            return None
+
+    entries = [e for line in last_lines if line.strip() and (e := _safe_load(line)) is not None]
 
     # Pre-populate buffer so next calls avoid disk I/O
     if name not in _LOG_BUFFER:
-        from_file = [json.loads(line) for line in raw_lines if line.strip()]
+        from_file = [e for line in raw_lines if line.strip() and (e := _safe_load(line)) is not None]
         _LOG_BUFFER[name] = collections.deque(from_file, maxlen=_LOG_BUFFER_MAX)
 
     return entries

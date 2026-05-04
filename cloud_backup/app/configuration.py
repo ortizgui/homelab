@@ -165,7 +165,12 @@ def _load_config_from_disk() -> dict[str, Any]:
         cfg = default_config()
         save_config(cfg)
         return cfg
-    persisted = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        cfg = default_config()
+        save_config(cfg)
+        return cfg
     data = migrate_config(persisted)
     data.setdefault("provider", {})
     data["provider"]["rclone_config"] = read_rclone_config()

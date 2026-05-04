@@ -93,3 +93,18 @@
 
 ### Related
 - [Decision: Preflight Remote Cache and Scheduler Logging](../decisions/006-preflight-cache.md)
+
+## [2026-05-03] Code Review: Resilience and Performance
+
+### Fixed
+- **JS orphaned DOM references**: `document.getElementById("run-restore")` (element removed from HTML) crashed initial page load before `loadAll()` could run. Removed old restore event listener. `document.getElementById("restore-snapshots")` wrapped in null guard.
+- **scheduler-state.json corruption**: `scheduler.py:load_state()` now catches `json.JSONDecodeError`, returns `{}` instead of crashing scheduler loop.
+- **config.json corruption**: `configuration.py:_load_config_from_disk()` now catches `json.JSONDecodeError`, regenerates from defaults instead of crashing engine.
+- **JSONL parse tolerance**: `operations.py:list_logs()` skips corrupted lines instead of crashing. `runtime.py:list_json_logs()` uses `_safe_load()` helper.
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `web/app.js` | Removed orphaned `run-restore` listener, null-guarded `restore-snapshots` in renderStatus() |
+| `app/scheduler.py` | JSONDecodeError tolerance in load_state() |
+| `app/configuration.py` | JSONDecodeError tolerance in _load_config_from_disk() |

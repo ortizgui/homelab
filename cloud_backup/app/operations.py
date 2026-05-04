@@ -1010,7 +1010,10 @@ def list_logs(limit: int = 200) -> dict[str, Any]:
         for line in last_lines:
             if not line.strip():
                 continue
-            entry: dict[str, Any] = json.loads(line)
+            try:
+                entry: dict[str, Any] = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             # Trim large fields for UI display (full data kept on disk)
             if isinstance(entry.get("stdout"), str) and len(entry["stdout"]) > 500:
                 entry["stdout"] = entry["stdout"][:500] + "..."

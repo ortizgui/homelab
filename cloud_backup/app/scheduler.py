@@ -29,7 +29,10 @@ def load_state() -> dict:
     file_path = scheduler_state_file()
     if not file_path.exists():
         return {}
-    return json.loads(file_path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(file_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 def save_state(state: dict) -> None:
