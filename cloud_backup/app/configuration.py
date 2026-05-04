@@ -174,6 +174,16 @@ def _load_config_from_disk() -> dict[str, Any]:
     data = migrate_config(persisted)
     data.setdefault("provider", {})
     data["provider"]["rclone_config"] = read_rclone_config()
+
+    # Fallback: if config has empty password but env var exists, use env var
+    provider = data["provider"]
+    env_password = os.getenv("RESTIC_PASSWORD", "")
+    if not provider.get("restic_password") and env_password:
+        provider["restic_password"] = env_password
+    env_repository = os.getenv("RESTIC_REPOSITORY", "")
+    if not provider.get("repository") and env_repository:
+        provider["repository"] = env_repository
+
     validate_config(data)
     if data != persisted:
         save_config(data)
